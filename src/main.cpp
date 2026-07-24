@@ -1,25 +1,27 @@
-/* clear.c ... */
-
-/*
- * This example code creates an SDL window and renderer, and then clears the
- * window to a different color every frame, so you'll effectively get a window
- * that's smoothly fading between colors.
- *
- * This code is public domain. Feel free to use it for any purpose!
- */
-
 #define SDL_MAIN_USE_CALLBACKS 1 /* use the callbacks instead of main() */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+
 #include <core/core.hpp>
+#include <core/core.cpp>
+
+using namespace ETide;
 
 /* We will use this renderer to draw into this window every frame. */
-static SDL_Window*   window   = NULL;
-static SDL_Renderer* renderer = NULL;
+static SDL_Window*   window     = NULL;
+static SDL_Renderer* renderer   = NULL;
+static Arena::Arena* glob_arena = NULL;
 
 /* This function runs once at startup. */
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     SDL_SetAppMetadata("Example Renderer Clear", "1.0", "com.example.renderer-clear");
+
+    glob_arena = Arena::allocate({});
+
+    U64* array = Arena::push_array<U64>(glob_arena, KB(64));
+    for (U64 i = 0; i < KB(64); ++i) array[i] = i;
+
+    for (U64 i = 0; i < KB(64); ++i) SDL_Log("%llu", array[i]);
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_Log("Couldn't initialize SDL: %s", SDL_GetError());
@@ -76,4 +78,5 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 /* This function runs once at shutdown. */
 void SDL_AppQuit(void* appstate, SDL_AppResult result) {
     /* SDL will clean up the window/renderer for us. */
+    Arena::release(glob_arena);
 }
