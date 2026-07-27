@@ -175,7 +175,6 @@ struct Temp {
 };
 
 global U64 arena_header_size = 128;
-global U64 default_page_size = KB(4);
 
 internal Arena* allocate(Params params);
 internal void   release(Arena* arena);

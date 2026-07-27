@@ -155,9 +155,10 @@ internal Arena* allocate(Params params) {
     U64                commit_size  = params.commit_size;
 
     void* base = 0;
+    U64   page = ETide::page_size();
 
-    reserve_size = AlignPow2(reserve_size, default_page_size);
-    commit_size  = AlignPow2(commit_size, default_page_size);
+    reserve_size = AlignPow2(reserve_size, page);
+    commit_size  = AlignPow2(commit_size, page);
 
     base = allocator->reserve(reserve_size);
     if (base == 0) { return 0; }
@@ -173,8 +174,8 @@ internal Arena* allocate(Params params) {
     arena->current   = arena;
     arena->prev      = 0;
     arena->flags     = params.flags;
-    arena->cmt_size  = params.commit_size;
-    arena->res_size  = params.reserve_size;
+    arena->cmt_size  = commit_size;
+    arena->res_size  = reserve_size;
     arena->base_pos  = 0;
     arena->pos       = arena_header_size;
     arena->cmt       = commit_size;
