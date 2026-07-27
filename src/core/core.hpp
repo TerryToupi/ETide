@@ -451,7 +451,7 @@ class Handle {
     Handle() = default;
     explicit Handle(U64 value) : m_value(value) {}
 
-    explicit operator bool() const { return (m_value & kValidBit) != 0; }
+    explicit operator bool() const { return m_value != 0; }
     U64      value() const { return m_value; }
 
     friend B32 operator==(Handle a, Handle b) { return a.m_value == b.m_value; }
@@ -460,8 +460,6 @@ class Handle {
    private:
     template <typename>
     friend class Pool;
-
-    static constexpr U64 kValidBit = U64{1} << 63;
 
     U64 m_value = 0;
 };
@@ -637,7 +635,6 @@ class Pool {
     static constexpr U32 kMaxSegments         = 26;
     static constexpr U32 kNotInFreelist       = UINT32_MAX;
     static constexpr U32 kEndOfList           = kNotInFreelist - 1;
-    static constexpr U32 kGenerationMask      = 0x7FFF'FFFF;
     struct Entry {
         T*       storage_ptr() { return reinterpret_cast<T*>(storage); }
         const T* storage_ptr() const { return reinterpret_cast<const T*>(storage); }
@@ -652,7 +649,6 @@ class Pool {
     struct DecomposedHandle {
         U32 idx;
         U32 generation;
-        B32 valid;
     };
 
     static constexpr U32 slots_in_segment(U32 segment_index) {
@@ -670,21 +666,20 @@ class Pool {
     }
 
     static U32 next_generation(U32 generation) {
-        generation = (generation + 1) & kGenerationMask;
+        ++generation;
         if (generation == 0) { generation = 1; }
         return generation;
     }
 
     static handle_type create_handle(U32 idx, U32 generation) {
-        U64 value = handle_type::kValidBit | (static_cast<U64>(generation) << 32) | idx;
+        U64 value = (static_cast<U64>(generation) << 32) | idx;
         return handle_type(value);
     }
 
     static DecomposedHandle decompose_handle(handle_type handle) {
         return {
             .idx        = static_cast<U32>(handle.m_value & 0xFFFF'FFFF),
-            .generation = static_cast<U32>((handle.m_value >> 32) & kGenerationMask),
-            .valid      = handle ? 1 : 0,
+            .generation = static_cast<U32>(handle.m_value >> 32),
         };
     }
 
@@ -755,7 +750,7 @@ class Pool {
     }
 
     Entry* get_if_valid(DecomposedHandle handle) {
-        if (!handle.valid || (handle.idx >= m_capacity) || (handle.generation == 0)) { return 0; }
+        if ((handle.idx >= m_capacity) || (handle.generation == 0)) { return 0; }
 
         Entry* entry = get(handle.idx);
         if (entry->next != kNotInFreelist || entry->generation != handle.generation) { return 0; }
@@ -763,7 +758,7 @@ class Pool {
     }
 
     const Entry* get_if_valid(DecomposedHandle handle) const {
-        if (!handle.valid || (handle.idx >= m_capacity) || (handle.generation == 0)) { return 0; }
+        if ((handle.idx >= m_capacity) || (handle.generation == 0)) { return 0; }
 
         const Entry* entry = get(handle.idx);
         if (entry->next != kNotInFreelist || entry->generation != handle.generation) { return 0; }
