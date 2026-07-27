@@ -1,4 +1,5 @@
 #include <SDL3/SDL_cpuinfo.h>
+#include <SDL3/SDL_mutex.h>
 
 #if SDL_PLATFORM_WINDOWS
 #    define WIN32_LEAN_AND_MEAN
@@ -95,6 +96,54 @@ internal U64 clz64(U64 val) {
     }
     return result;
 #endif
+}
+
+internal Mutex mutex_create() {
+    return SDL_CreateMutex();
+}
+
+internal void mutex_destroy(Mutex mutex) {
+    SDL_DestroyMutex(static_cast<SDL_Mutex*>(mutex));
+}
+
+internal void mutex_lock(Mutex mutex) {
+    SDL_LockMutex(static_cast<SDL_Mutex*>(mutex));
+}
+
+internal B32 mutex_try_lock(Mutex mutex) {
+    return SDL_TryLockMutex(static_cast<SDL_Mutex*>(mutex));
+}
+
+internal void mutex_unlock(Mutex mutex) {
+    SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex));
+}
+
+internal RWLock rwlock_create() {
+    return SDL_CreateRWLock();
+}
+
+internal void rwlock_destroy(RWLock lock) {
+    SDL_DestroyRWLock(static_cast<SDL_RWLock*>(lock));
+}
+
+internal void rwlock_read_lock(RWLock lock) {
+    SDL_LockRWLockForReading(static_cast<SDL_RWLock*>(lock));
+}
+
+internal void rwlock_write_lock(RWLock lock) {
+    SDL_LockRWLockForWriting(static_cast<SDL_RWLock*>(lock));
+}
+
+internal B32 rwlock_try_read_lock(RWLock lock) {
+    return SDL_TryLockRWLockForReading(static_cast<SDL_RWLock*>(lock));
+}
+
+internal B32 rwlock_try_write_lock(RWLock lock) {
+    return SDL_TryLockRWLockForWriting(static_cast<SDL_RWLock*>(lock));
+}
+
+internal void rwlock_unlock(RWLock lock) {
+    SDL_UnlockRWLock(static_cast<SDL_RWLock*>(lock));
 }
 
 internal U64 page_size() {

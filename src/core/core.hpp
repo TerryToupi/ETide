@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
-#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <type_traits>
@@ -100,10 +99,27 @@ typedef int64_t  B64;
 typedef float    F32;
 typedef double   F64;
 
+typedef void* Mutex;
+typedef void* RWLock;
+
 internal U64 ctz32(U32 val);
 internal U64 ctz64(U64 val);
 internal U64 clz32(U32 val);
 internal U64 clz64(U64 val);
+
+internal Mutex mutex_create();
+internal void  mutex_destroy(Mutex mutex);
+internal void  mutex_lock(Mutex mutex);
+internal B32   mutex_try_lock(Mutex mutex);
+internal void  mutex_unlock(Mutex mutex);
+
+internal RWLock rwlock_create();
+internal void   rwlock_destroy(RWLock lock);
+internal void   rwlock_read_lock(RWLock lock);
+internal void   rwlock_write_lock(RWLock lock);
+internal B32    rwlock_try_read_lock(RWLock lock);
+internal B32    rwlock_try_write_lock(RWLock lock);
+internal void   rwlock_unlock(RWLock lock);
 
 internal U64 page_size();
 
@@ -219,6 +235,9 @@ namespace ETide::Containers {
 template <typename T>
 class DynamicArray {
    public:
+    static_assert(std::is_trivially_destructible_v<T>,
+                  "DynamicArray only accepts trivially destructible types");
+
     using value_type      = T;
     using size_type       = U32;
     using difference_type = I64;
@@ -280,15 +299,7 @@ class DynamicArray {
     }
 
     void clear() noexcept {
-        U32 remaining_count = m_count;
         for (U32 segment_idx = 0; segment_idx < m_used_segments; ++segment_idx) {
-            U32 segment_size = slots_in_segment(segment_idx);
-            T*  segment      = m_segments[segment_idx];
-
-            for (U32 idx = 0; idx < segment_size && remaining_count > 0; ++idx, --remaining_count) {
-                std::destroy_at(&segment[idx]);
-            }
-
             m_segments[segment_idx] = 0;
         }
 
@@ -459,23 +470,33 @@ class Handle {
 template <typename T>
 class Pool {
    public:
+    static_assert(std::is_trivially_destructible_v<T>,
+                  "Pool only accepts trivially destructible types");
+
     using value_type      = T;
     using size_type       = U32;
     using reference       = T&;
     using const_reference = const T&;
     using allocator_type  = Memory::Allocator;
     using handle_type     = Handle<T>;
-    using DestructorFn    = void (*)(T*);
 
     Pool() : Pool(&Memory::default_allocator) {}
-    explicit Pool(allocator_type* allocator) : Pool(allocator, &destroy_value) {}
-    Pool(allocator_type* allocator, DestructorFn destructor_fn) :
-        m_allocator(allocator), m_destructor_fn(destructor_fn) {
+    explicit Pool(allocator_type* allocator) : m_allocator(allocator) {
         if (m_allocator == 0) { throw std::invalid_argument("Pool allocator cannot be null"); }
-        if (m_destructor_fn == 0) { throw std::invalid_argument("Pool destructor cannot be null"); }
         reserve_storage();
+        m_lock = rwlock_create();
+        if (m_lock == 0) {
+            m_allocator->release(m_base, m_aligned_reservation_size);
+            m_base                     = 0;
+            m_aligned_reservation_size = 0;
+            throw std::bad_alloc();
+        }
     }
-    ~Pool() { release_storage(); }
+    ~Pool() {
+        release_storage();
+        rwlock_destroy(m_lock);
+        m_lock = 0;
+    }
 
     Pool(const Pool&)            = delete;
     Pool& operator=(const Pool&) = delete;
@@ -483,17 +504,9 @@ class Pool {
     Pool& operator=(Pool&&)      = delete;
 
     void clear() {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        rwlock_write_lock(m_lock);
 
         for (U32 segment_idx = 0; segment_idx < m_used_segments; ++segment_idx) {
-            U32    segment_size = slots_in_segment(segment_idx);
-            Entry* segment      = m_segments[segment_idx];
-
-            for (U32 idx = 0; idx < segment_size; ++idx) {
-                Entry* entry = &segment[idx];
-                if (entry->next == kNotInFreelist) { m_destructor_fn(entry->value()); }
-            }
-
             m_segments[segment_idx] = 0;
         }
 
@@ -508,63 +521,113 @@ class Pool {
         m_used_segments = 0;
         m_count         = 0;
         m_head          = kEndOfList;
+        rwlock_unlock(m_lock);
     }
 
     template <typename... Args>
     handle_type emplace(Args&&... args) {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_head == kEndOfList) { add_segment(); }
+        rwlock_write_lock(m_lock);
+        if (m_head == kEndOfList) {
+            if (m_used_segments == kMaxSegments) {
+                rwlock_unlock(m_lock);
+                throw std::length_error("Pool reached maximum size");
+            }
+            if (!add_segment()) {
+                rwlock_unlock(m_lock);
+                throw std::bad_alloc();
+            }
+        }
 
         U32    idx   = m_head;
         Entry* entry = get(idx);
         if (entry->next == kNotInFreelist) {
+            rwlock_unlock(m_lock);
             throw std::runtime_error("Pool freelist is corrupted");
         }
 
-        std::construct_at(entry->storage_ptr(), std::forward<Args>(args)...);
+        try {
+            std::construct_at(entry->storage_ptr(), std::forward<Args>(args)...);
+        } catch (...) {
+            rwlock_unlock(m_lock);
+            throw;
+        }
 
         m_head              = entry->next;
         entry->next         = kNotInFreelist;
         m_latest_generation = next_generation(m_latest_generation);
         entry->generation   = m_latest_generation;
         ++m_count;
-        return create_handle(idx, entry->generation);
+        handle_type handle = create_handle(idx, entry->generation);
+        rwlock_unlock(m_lock);
+        return handle;
     }
 
     void erase(handle_type handle) {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        DecomposedHandle            decomposed = decompose_handle(handle);
-        Entry*                      entry      = get_checked(decomposed);
+        rwlock_write_lock(m_lock);
+        DecomposedHandle decomposed = decompose_handle(handle);
+        Entry*           entry      = get_if_valid(decomposed);
+        if (entry == 0) {
+            rwlock_unlock(m_lock);
+            throw std::out_of_range("Pool handle is invalid or stale");
+        }
 
-        m_destructor_fn(entry->value());
         entry->next = m_head;
         m_head      = decomposed.idx;
         --m_count;
+        rwlock_unlock(m_lock);
     }
 
     reference operator[](handle_type handle) {
-        return *get_checked(decompose_handle(handle))->value();
+        rwlock_read_lock(m_lock);
+        Entry* entry = get_if_valid(decompose_handle(handle));
+        if (entry == 0) {
+            rwlock_unlock(m_lock);
+            throw std::out_of_range("Pool handle is invalid or stale");
+        }
+        T* value = entry->value();
+        rwlock_unlock(m_lock);
+        return *value;
     }
     const_reference operator[](handle_type handle) const {
-        return *get_checked(decompose_handle(handle))->value();
+        rwlock_read_lock(m_lock);
+        const Entry* entry = get_if_valid(decompose_handle(handle));
+        if (entry == 0) {
+            rwlock_unlock(m_lock);
+            throw std::out_of_range("Pool handle is invalid or stale");
+        }
+        const T* value = entry->value();
+        rwlock_unlock(m_lock);
+        return *value;
     }
 
     reference       at(handle_type handle) { return (*this)[handle]; }
     const_reference at(handle_type handle) const { return (*this)[handle]; }
 
     B32 contains(handle_type handle) const {
-        if (!handle) { return 0; }
-
-        DecomposedHandle decomposed = decompose_handle(handle);
-        if (decomposed.idx >= m_capacity) { return 0; }
-
-        const Entry* entry = get(decomposed.idx);
-        return entry->next == kNotInFreelist && entry->generation == decomposed.generation;
+        rwlock_read_lock(m_lock);
+        B32 result = get_if_valid(decompose_handle(handle)) != 0;
+        rwlock_unlock(m_lock);
+        return result;
     }
 
-    B32                  empty() const { return m_count == 0; }
-    U32                  size() const { return m_count; }
-    U32                  capacity() const { return m_capacity; }
+    B32 empty() const {
+        rwlock_read_lock(m_lock);
+        B32 result = m_count == 0;
+        rwlock_unlock(m_lock);
+        return result;
+    }
+    U32 size() const {
+        rwlock_read_lock(m_lock);
+        U32 result = m_count;
+        rwlock_unlock(m_lock);
+        return result;
+    }
+    U32 capacity() const {
+        rwlock_read_lock(m_lock);
+        U32 result = m_capacity;
+        rwlock_unlock(m_lock);
+        return result;
+    }
     static constexpr U32 max_size() { return capacity_for_segment_count(kMaxSegments); }
 
     allocator_type* get_allocator() const { return m_allocator; }
@@ -625,8 +688,6 @@ class Pool {
         };
     }
 
-    static void destroy_value(T* value) { std::destroy_at(value); }
-
     static void align_to_page(void** ptr, U64* size) {
         U64 page            = ETide::page_size();
         U64 address         = reinterpret_cast<U64>(*ptr);
@@ -653,12 +714,7 @@ class Pool {
         }
     }
 
-    void add_segment() {
-        if (m_used_segments == kMaxSegments) {
-            throw std::length_error("Pool reached maximum size");
-        }
-        if (m_base == 0) { reserve_storage(); }
-
+    B32 add_segment() {
         U32 segment_size = slots_in_segment(m_used_segments);
         U64 byte_size    = static_cast<U64>(segment_size) * sizeof(Entry);
         U64 byte_offset =
@@ -670,7 +726,7 @@ class Pool {
         align_to_page(&commit_ptr, &commit_size);
 
         B32 commit_succeeded = m_allocator->commit(commit_ptr, commit_size);
-        if (!commit_succeeded) { throw std::bad_alloc(); }
+        if (!commit_succeeded) { return 0; }
 
         U32 segment_offset            = m_capacity;
         m_segments[m_used_segments++] = segment;
@@ -683,6 +739,7 @@ class Pool {
             entry->next       = m_head;
             m_head            = idx;
         }
+        return 1;
     }
 
     Entry* get(U32 idx) {
@@ -697,33 +754,24 @@ class Pool {
         return &m_segments[segment][slot];
     }
 
-    Entry* get_checked(DecomposedHandle handle) {
-        if (!handle.valid || (handle.idx >= m_capacity) || (handle.generation == 0)) {
-            throw std::out_of_range("Pool handle is invalid");
-        }
+    Entry* get_if_valid(DecomposedHandle handle) {
+        if (!handle.valid || (handle.idx >= m_capacity) || (handle.generation == 0)) { return 0; }
 
         Entry* entry = get(handle.idx);
-        if (entry->next != kNotInFreelist || entry->generation != handle.generation) {
-            throw std::out_of_range("Pool handle is stale");
-        }
+        if (entry->next != kNotInFreelist || entry->generation != handle.generation) { return 0; }
         return entry;
     }
 
-    const Entry* get_checked(DecomposedHandle handle) const {
-        if (!handle.valid || (handle.idx >= m_capacity) || (handle.generation == 0)) {
-            throw std::out_of_range("Pool handle is invalid");
-        }
+    const Entry* get_if_valid(DecomposedHandle handle) const {
+        if (!handle.valid || (handle.idx >= m_capacity) || (handle.generation == 0)) { return 0; }
 
         const Entry* entry = get(handle.idx);
-        if (entry->next != kNotInFreelist || entry->generation != handle.generation) {
-            throw std::out_of_range("Pool handle is stale");
-        }
+        if (entry->next != kNotInFreelist || entry->generation != handle.generation) { return 0; }
         return entry;
     }
 
-    mutable std::mutex m_mutex;
+    mutable RWLock     m_lock                     = 0;
     Memory::Allocator* m_allocator                = &Memory::default_allocator;
-    DestructorFn       m_destructor_fn            = &destroy_value;
     void*              m_base                     = 0;
     U64                m_aligned_reservation_size = 0;
     U32                m_capacity                 = 0;
