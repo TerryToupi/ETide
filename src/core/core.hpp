@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <type_traits>
@@ -429,6 +430,308 @@ class DynamicArray {
     U32                m_used_segments            = 0;
     U32                m_count                    = 0;
     T*                 m_segments[kMaxSegments]   = {0};
+};
+
+template <typename T>
+class Handle {
+   public:
+    using value_type = U64;
+
+    Handle() = default;
+    explicit Handle(U64 value) : m_value(value) {}
+
+    explicit operator bool() const { return (m_value & kValidBit) != 0; }
+    U64      value() const { return m_value; }
+
+    friend B32 operator==(Handle a, Handle b) { return a.m_value == b.m_value; }
+    friend B32 operator!=(Handle a, Handle b) { return a.m_value != b.m_value; }
+
+   private:
+    template <typename>
+    friend class Pool;
+
+    static constexpr U64 kValidBit = U64{1} << 63;
+
+    U64 m_value = 0;
+};
+
+// A segmented object pool with stable addresses and generation-checked handles.
+template <typename T>
+class Pool {
+   public:
+    using value_type      = T;
+    using size_type       = U32;
+    using reference       = T&;
+    using const_reference = const T&;
+    using allocator_type  = Memory::Allocator;
+    using handle_type     = Handle<T>;
+    using DestructorFn    = void (*)(T*);
+
+    Pool() : Pool(&Memory::default_allocator) {}
+    explicit Pool(allocator_type* allocator) : Pool(allocator, &destroy_value) {}
+    Pool(allocator_type* allocator, DestructorFn destructor_fn) :
+        m_allocator(allocator), m_destructor_fn(destructor_fn) {
+        if (m_allocator == 0) { throw std::invalid_argument("Pool allocator cannot be null"); }
+        if (m_destructor_fn == 0) { throw std::invalid_argument("Pool destructor cannot be null"); }
+        reserve_storage();
+    }
+    ~Pool() { release_storage(); }
+
+    Pool(const Pool&)            = delete;
+    Pool& operator=(const Pool&) = delete;
+    Pool(Pool&&)                 = delete;
+    Pool& operator=(Pool&&)      = delete;
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        for (U32 segment_idx = 0; segment_idx < m_used_segments; ++segment_idx) {
+            U32    segment_size = slots_in_segment(segment_idx);
+            Entry* segment      = m_segments[segment_idx];
+
+            for (U32 idx = 0; idx < segment_size; ++idx) {
+                Entry* entry = &segment[idx];
+                if (entry->next == kNotInFreelist) { m_destructor_fn(entry->value()); }
+            }
+
+            m_segments[segment_idx] = 0;
+        }
+
+        if (m_used_segments > 0) {
+            void* ptr  = m_base;
+            U64   size = static_cast<U64>(m_capacity) * sizeof(Entry);
+            align_to_page(&ptr, &size);
+            m_allocator->decommit(ptr, size);
+        }
+
+        m_capacity      = 0;
+        m_used_segments = 0;
+        m_count         = 0;
+        m_head          = kEndOfList;
+    }
+
+    template <typename... Args>
+    handle_type emplace(Args&&... args) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_head == kEndOfList) { add_segment(); }
+
+        U32    idx   = m_head;
+        Entry* entry = get(idx);
+        if (entry->next == kNotInFreelist) {
+            throw std::runtime_error("Pool freelist is corrupted");
+        }
+
+        std::construct_at(entry->storage_ptr(), std::forward<Args>(args)...);
+
+        m_head              = entry->next;
+        entry->next         = kNotInFreelist;
+        m_latest_generation = next_generation(m_latest_generation);
+        entry->generation   = m_latest_generation;
+        ++m_count;
+        return create_handle(idx, entry->generation);
+    }
+
+    void erase(handle_type handle) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        DecomposedHandle            decomposed = decompose_handle(handle);
+        Entry*                      entry      = get_checked(decomposed);
+
+        m_destructor_fn(entry->value());
+        entry->next = m_head;
+        m_head      = decomposed.idx;
+        --m_count;
+    }
+
+    reference operator[](handle_type handle) {
+        return *get_checked(decompose_handle(handle))->value();
+    }
+    const_reference operator[](handle_type handle) const {
+        return *get_checked(decompose_handle(handle))->value();
+    }
+
+    reference       at(handle_type handle) { return (*this)[handle]; }
+    const_reference at(handle_type handle) const { return (*this)[handle]; }
+
+    B32 contains(handle_type handle) const {
+        if (!handle) { return 0; }
+
+        DecomposedHandle decomposed = decompose_handle(handle);
+        if (decomposed.idx >= m_capacity) { return 0; }
+
+        const Entry* entry = get(decomposed.idx);
+        return entry->next == kNotInFreelist && entry->generation == decomposed.generation;
+    }
+
+    B32                  empty() const { return m_count == 0; }
+    U32                  size() const { return m_count; }
+    U32                  capacity() const { return m_capacity; }
+    static constexpr U32 max_size() { return capacity_for_segment_count(kMaxSegments); }
+
+    allocator_type* get_allocator() const { return m_allocator; }
+
+   private:
+    static constexpr U32 kSmallSegmentsToSkip = 6;
+    static constexpr U32 kMaxSegments         = 26;
+    static constexpr U32 kNotInFreelist       = UINT32_MAX;
+    static constexpr U32 kEndOfList           = kNotInFreelist - 1;
+    static constexpr U32 kGenerationMask      = 0x7FFF'FFFF;
+    struct Entry {
+        T*       storage_ptr() { return reinterpret_cast<T*>(storage); }
+        const T* storage_ptr() const { return reinterpret_cast<const T*>(storage); }
+        T*       value() { return std::launder(storage_ptr()); }
+        const T* value() const { return std::launder(storage_ptr()); }
+
+        alignas(T) U8 storage[sizeof(T)];
+        U32 next;
+        U32 generation;
+    };
+
+    struct DecomposedHandle {
+        U32 idx;
+        U32 generation;
+        B32 valid;
+    };
+
+    static constexpr U32 slots_in_segment(U32 segment_index) {
+        return static_cast<U32>((U64{1} << kSmallSegmentsToSkip) << segment_index);
+    }
+
+    static constexpr U32 capacity_for_segment_count(U32 segment_count) {
+        return static_cast<U32>(((U64{1} << kSmallSegmentsToSkip) << segment_count) -
+                                (U64{1} << kSmallSegmentsToSkip));
+    }
+
+    static constexpr U32 segment_for_index(U32 idx) {
+        U32 value = (idx >> kSmallSegmentsToSkip) + 1;
+        return 31 - static_cast<U32>(clz32(value));
+    }
+
+    static U32 next_generation(U32 generation) {
+        generation = (generation + 1) & kGenerationMask;
+        if (generation == 0) { generation = 1; }
+        return generation;
+    }
+
+    static handle_type create_handle(U32 idx, U32 generation) {
+        U64 value = handle_type::kValidBit | (static_cast<U64>(generation) << 32) | idx;
+        return handle_type(value);
+    }
+
+    static DecomposedHandle decompose_handle(handle_type handle) {
+        return {
+            .idx        = static_cast<U32>(handle.m_value & 0xFFFF'FFFF),
+            .generation = static_cast<U32>((handle.m_value >> 32) & kGenerationMask),
+            .valid      = handle ? 1 : 0,
+        };
+    }
+
+    static void destroy_value(T* value) { std::destroy_at(value); }
+
+    static void align_to_page(void** ptr, U64* size) {
+        U64 page            = ETide::page_size();
+        U64 address         = reinterpret_cast<U64>(*ptr);
+        U64 aligned_address = AlignDownPow2(address, page);
+        U64 aligned_size    = AlignPow2(*size + address - aligned_address, page);
+
+        *ptr  = reinterpret_cast<void*>(aligned_address);
+        *size = aligned_size;
+    }
+
+    void reserve_storage() {
+        m_aligned_reservation_size =
+            AlignPow2(static_cast<U64>(max_size()) * sizeof(Entry), ETide::page_size());
+        m_base = m_allocator->reserve(m_aligned_reservation_size);
+        if (m_base == 0) { throw std::bad_alloc(); }
+    }
+
+    void release_storage() {
+        clear();
+        if (m_base != 0) {
+            m_allocator->release(m_base, m_aligned_reservation_size);
+            m_base                     = 0;
+            m_aligned_reservation_size = 0;
+        }
+    }
+
+    void add_segment() {
+        if (m_used_segments == kMaxSegments) {
+            throw std::length_error("Pool reached maximum size");
+        }
+        if (m_base == 0) { reserve_storage(); }
+
+        U32 segment_size = slots_in_segment(m_used_segments);
+        U64 byte_size    = static_cast<U64>(segment_size) * sizeof(Entry);
+        U64 byte_offset =
+            static_cast<U64>(capacity_for_segment_count(m_used_segments)) * sizeof(Entry);
+        Entry* segment = reinterpret_cast<Entry*>(static_cast<U8*>(m_base) + byte_offset);
+
+        void* commit_ptr  = segment;
+        U64   commit_size = byte_size;
+        align_to_page(&commit_ptr, &commit_size);
+
+        B32 commit_succeeded = m_allocator->commit(commit_ptr, commit_size);
+        if (!commit_succeeded) { throw std::bad_alloc(); }
+
+        U32 segment_offset            = m_capacity;
+        m_segments[m_used_segments++] = segment;
+        m_capacity += segment_size;
+
+        for (U32 slot = segment_size; slot > 0; --slot) {
+            U32    idx        = segment_offset + slot - 1;
+            Entry* entry      = &segment[slot - 1];
+            entry->generation = 0;
+            entry->next       = m_head;
+            m_head            = idx;
+        }
+    }
+
+    Entry* get(U32 idx) {
+        U32 segment = segment_for_index(idx);
+        U32 slot    = idx - capacity_for_segment_count(segment);
+        return &m_segments[segment][slot];
+    }
+
+    const Entry* get(U32 idx) const {
+        U32 segment = segment_for_index(idx);
+        U32 slot    = idx - capacity_for_segment_count(segment);
+        return &m_segments[segment][slot];
+    }
+
+    Entry* get_checked(DecomposedHandle handle) {
+        if (!handle.valid || (handle.idx >= m_capacity) || (handle.generation == 0)) {
+            throw std::out_of_range("Pool handle is invalid");
+        }
+
+        Entry* entry = get(handle.idx);
+        if (entry->next != kNotInFreelist || entry->generation != handle.generation) {
+            throw std::out_of_range("Pool handle is stale");
+        }
+        return entry;
+    }
+
+    const Entry* get_checked(DecomposedHandle handle) const {
+        if (!handle.valid || (handle.idx >= m_capacity) || (handle.generation == 0)) {
+            throw std::out_of_range("Pool handle is invalid");
+        }
+
+        const Entry* entry = get(handle.idx);
+        if (entry->next != kNotInFreelist || entry->generation != handle.generation) {
+            throw std::out_of_range("Pool handle is stale");
+        }
+        return entry;
+    }
+
+    mutable std::mutex m_mutex;
+    Memory::Allocator* m_allocator                = &Memory::default_allocator;
+    DestructorFn       m_destructor_fn            = &destroy_value;
+    void*              m_base                     = 0;
+    U64                m_aligned_reservation_size = 0;
+    U32                m_capacity                 = 0;
+    U32                m_used_segments            = 0;
+    U32                m_count                    = 0;
+    U32                m_head                     = kEndOfList;
+    U32                m_latest_generation        = 0;
+    Entry*             m_segments[kMaxSegments]   = {0};
 };
 
 }  // namespace ETide::Containers
