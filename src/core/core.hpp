@@ -7,6 +7,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <new>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 #define internal      static
 #define global        static
@@ -93,6 +98,13 @@ typedef int64_t  I64;
 typedef int64_t  B64;
 typedef float    F32;
 typedef double   F64;
+
+internal U64 ctz32(U32 val);
+internal U64 ctz64(U64 val);
+internal U64 clz32(U32 val);
+internal U64 clz64(U64 val);
+
+internal U64 page_size();
 
 }  // namespace ETide
 
@@ -200,5 +212,213 @@ internal inline constexpr T* push_array(Arena* arena, U64 count) {
 }
 
 }  // namespace ETide::Arena
+
+namespace ETide::Containers {
+
+// A segmented array that keeps element pointers stable as the container grows.
+template <typename T>
+class DynamicArray {
+   public:
+    using value_type      = T;
+    using size_type       = U32;
+    using difference_type = I64;
+    using reference       = T&;
+    using const_reference = const T&;
+    using pointer         = T*;
+    using const_pointer   = const T*;
+    using allocator_type  = Memory::Allocator;
+
+    DynamicArray() : DynamicArray(&Memory::default_allocator) {}
+    explicit DynamicArray(allocator_type* allocator) : m_allocator(allocator) {
+        if (m_allocator == 0) {
+            throw std::invalid_argument("DynamicArray allocator cannot be null");
+        }
+        reserve_storage();
+    }
+    ~DynamicArray() { release_storage(); }
+
+    DynamicArray(const DynamicArray&)            = delete;
+    DynamicArray& operator=(const DynamicArray&) = delete;
+
+    DynamicArray(DynamicArray&& other) noexcept :
+        m_allocator(other.m_allocator),
+        m_base(other.m_base),
+        m_aligned_reservation_size(other.m_aligned_reservation_size),
+        m_used_segments(other.m_used_segments),
+        m_count(other.m_count) {
+        for (U32 idx = 0; idx < kMaxSegments; ++idx) {
+            m_segments[idx]       = other.m_segments[idx];
+            other.m_segments[idx] = 0;
+        }
+
+        other.m_allocator                = &Memory::default_allocator;
+        other.m_base                     = 0;
+        other.m_aligned_reservation_size = 0;
+        other.m_used_segments            = 0;
+        other.m_count                    = 0;
+    }
+
+    DynamicArray& operator=(DynamicArray&& other) noexcept {
+        swap(*this, other);
+        return *this;
+    }
+
+    friend void swap(DynamicArray& a, DynamicArray& b) noexcept {
+        using std::swap;
+        swap(a.m_allocator, b.m_allocator);
+        swap(a.m_base, b.m_base);
+        swap(a.m_aligned_reservation_size, b.m_aligned_reservation_size);
+        swap(a.m_count, b.m_count);
+        swap(a.m_used_segments, b.m_used_segments);
+        swap(a.m_segments, b.m_segments);
+    }
+
+    void clear() noexcept {
+        U32 remaining_count = m_count;
+        for (U32 segment_idx = 0; segment_idx < m_used_segments; ++segment_idx) {
+            U32 segment_size = slots_in_segment(segment_idx);
+            T*  segment      = m_segments[segment_idx];
+
+            for (U32 idx = 0; idx < segment_size && remaining_count > 0; ++idx, --remaining_count) {
+                std::destroy_at(&segment[idx]);
+            }
+
+            m_segments[segment_idx] = 0;
+        }
+
+        if (m_used_segments > 0) {
+            void* ptr  = m_base;
+            U64   size = static_cast<U64>(capacity()) * sizeof(T);
+            align_to_page(&ptr, &size);
+            m_allocator->decommit(ptr, size);
+        }
+
+        m_used_segments = 0;
+        m_count         = 0;
+    }
+
+    template <typename... Args>
+    reference emplace_back(Args&&... args) {
+        if (m_count == capacity()) { add_segment(); }
+
+        T* entry = get(m_count);
+        std::construct_at(entry, std::forward<Args>(args)...);
+        ++m_count;
+        return *entry;
+    }
+
+    reference push_back(const T& value) { return emplace_back(value); }
+    reference push_back(T&& value) { return emplace_back(std::move(value)); }
+
+    const_reference operator[](U32 idx) const { return *get(idx); }
+    reference       operator[](U32 idx) { return *get(idx); }
+
+    const_reference at(U32 idx) const {
+        if (idx >= m_count) { throw std::out_of_range("DynamicArray index out of range"); }
+        return *get(idx);
+    }
+    reference at(U32 idx) {
+        if (idx >= m_count) { throw std::out_of_range("DynamicArray index out of range"); }
+        return *get(idx);
+    }
+
+    const_reference front() const { return *get(0); }
+    reference       front() { return *get(0); }
+    const_reference back() const { return *get(m_count - 1); }
+    reference       back() { return *get(m_count - 1); }
+
+    constexpr B32        empty() const { return m_count == 0; }
+    constexpr U32        size() const { return m_count; }
+    constexpr U32        capacity() const { return capacity_for_segment_count(m_used_segments); }
+    static constexpr U32 max_size() { return capacity_for_segment_count(kMaxSegments); }
+
+    allocator_type* get_allocator() const { return m_allocator; }
+
+   private:
+    static constexpr U32 kSmallSegmentsToSkip = 6;
+    static constexpr U32 kMaxSegments         = 26;
+
+    static constexpr U32 slots_in_segment(U32 segment_index) {
+        return static_cast<U32>((U64{1} << kSmallSegmentsToSkip) << segment_index);
+    }
+
+    static constexpr U32 capacity_for_segment_count(U32 segment_count) {
+        return static_cast<U32>(((U64{1} << kSmallSegmentsToSkip) << segment_count) -
+                                (U64{1} << kSmallSegmentsToSkip));
+    }
+
+    static constexpr U32 segment_for_index(U32 idx) {
+        U32 value = (idx >> kSmallSegmentsToSkip) + 1;
+        return 31 - static_cast<U32>(clz32(value));
+    }
+
+    static void align_to_page(void** ptr, U64* size) {
+        U64 page            = ETide::page_size();
+        U64 address         = reinterpret_cast<U64>(*ptr);
+        U64 aligned_address = AlignDownPow2(address, page);
+        U64 aligned_size    = AlignPow2(*size + address - aligned_address, page);
+
+        *ptr  = reinterpret_cast<void*>(aligned_address);
+        *size = aligned_size;
+    }
+
+    void reserve_storage() {
+        m_aligned_reservation_size =
+            AlignPow2(static_cast<U64>(max_size()) * sizeof(T), ETide::page_size());
+        m_base = m_allocator->reserve(m_aligned_reservation_size);
+        if (m_base == 0) { throw std::bad_alloc(); }
+    }
+
+    void release_storage() noexcept {
+        clear();
+        if (m_base != 0) {
+            m_allocator->release(m_base, m_aligned_reservation_size);
+            m_base                     = 0;
+            m_aligned_reservation_size = 0;
+        }
+    }
+
+    void add_segment() {
+        if (m_used_segments == kMaxSegments) {
+            throw std::length_error("DynamicArray reached maximum size");
+        }
+        if (m_base == 0) { reserve_storage(); }
+
+        U32 segment_size = slots_in_segment(m_used_segments);
+        U64 byte_size    = static_cast<U64>(segment_size) * sizeof(T);
+        U64 byte_offset = static_cast<U64>(capacity_for_segment_count(m_used_segments)) * sizeof(T);
+        T*  segment     = reinterpret_cast<T*>(static_cast<U8*>(m_base) + byte_offset);
+
+        void* commit_ptr  = segment;
+        U64   commit_size = byte_size;
+        align_to_page(&commit_ptr, &commit_size);
+
+        B32 commit_succeeded = m_allocator->commit(commit_ptr, commit_size);
+        if (!commit_succeeded) { throw std::bad_alloc(); }
+
+        m_segments[m_used_segments++] = segment;
+    }
+
+    T* get(U32 idx) {
+        U32 segment = segment_for_index(idx);
+        U32 slot    = idx - capacity_for_segment_count(segment);
+        return &m_segments[segment][slot];
+    }
+
+    const T* get(U32 idx) const {
+        U32 segment = segment_for_index(idx);
+        U32 slot    = idx - capacity_for_segment_count(segment);
+        return &m_segments[segment][slot];
+    }
+
+    Memory::Allocator* m_allocator                = &Memory::default_allocator;
+    void*              m_base                     = 0;
+    U64                m_aligned_reservation_size = 0;
+    U32                m_used_segments            = 0;
+    U32                m_count                    = 0;
+    T*                 m_segments[kMaxSegments]   = {0};
+};
+
+}  // namespace ETide::Containers
 
 #endif

@@ -1,9 +1,109 @@
+#include <SDL3/SDL_cpuinfo.h>
+
 #if SDL_PLATFORM_WINDOWS
 #    define WIN32_LEAN_AND_MEAN
 #    include <windows.h>
 #else
 #    include <sys/mman.h>
 #endif
+
+#if defined(_MSC_VER)
+#    include <intrin.h>
+#endif
+
+namespace ETide {
+
+internal U64 ctz32(U32 val) {
+    if (val == 0) { return 32; }
+
+#if defined(_MSC_VER)
+    unsigned long idx = 0;
+    _BitScanForward(&idx, val);
+    return idx;
+#elif defined(__clang__) || defined(__GNUC__)
+    return static_cast<U64>(__builtin_ctz(val));
+#else
+    U64 result = 0;
+    while ((val & 1) == 0) {
+        val >>= 1;
+        ++result;
+    }
+    return result;
+#endif
+}
+
+internal U64 ctz64(U64 val) {
+    if (val == 0) { return 64; }
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64) || defined(_M_ARM64EC))
+    unsigned long idx = 0;
+    _BitScanForward64(&idx, val);
+    return idx;
+#elif defined(_MSC_VER)
+    U32 low = static_cast<U32>(val);
+    return low != 0 ? ctz32(low) : 32 + ctz32(static_cast<U32>(val >> 32));
+#elif defined(__clang__) || defined(__GNUC__)
+    return static_cast<U64>(__builtin_ctzll(val));
+#else
+    U64 result = 0;
+    while ((val & 1) == 0) {
+        val >>= 1;
+        ++result;
+    }
+    return result;
+#endif
+}
+
+internal U64 clz32(U32 val) {
+    if (val == 0) { return 32; }
+
+#if defined(_MSC_VER)
+    unsigned long idx = 0;
+    _BitScanReverse(&idx, val);
+    return 31 - idx;
+#elif defined(__clang__) || defined(__GNUC__)
+    return static_cast<U64>(__builtin_clz(val));
+#else
+    U64 result = 0;
+    U32 bit    = U32{1} << 31;
+    while ((val & bit) == 0) {
+        bit >>= 1;
+        ++result;
+    }
+    return result;
+#endif
+}
+
+internal U64 clz64(U64 val) {
+    if (val == 0) { return 64; }
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64) || defined(_M_ARM64EC))
+    unsigned long idx = 0;
+    _BitScanReverse64(&idx, val);
+    return 63 - idx;
+#elif defined(_MSC_VER)
+    U32 high = static_cast<U32>(val >> 32);
+    return high != 0 ? clz32(high) : 32 + clz32(static_cast<U32>(val));
+#elif defined(__clang__) || defined(__GNUC__)
+    return static_cast<U64>(__builtin_clzll(val));
+#else
+    U64 result = 0;
+    U64 bit    = U64{1} << 63;
+    while ((val & bit) == 0) {
+        bit >>= 1;
+        ++result;
+    }
+    return result;
+#endif
+}
+
+internal U64 page_size() {
+    U64 result = static_cast<U64>(SDL_GetSystemPageSize());
+    if (result == 0) { result = KB(4); }
+    return result;
+}
+
+}  // namespace ETide
 
 namespace ETide::Memory {
 
