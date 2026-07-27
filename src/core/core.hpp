@@ -244,6 +244,8 @@ class DynamicArray {
         m_allocator(other.m_allocator),
         m_base(other.m_base),
         m_aligned_reservation_size(other.m_aligned_reservation_size),
+        m_current_segment_entry(other.m_current_segment_entry),
+        m_capacity(other.m_capacity),
         m_used_segments(other.m_used_segments),
         m_count(other.m_count) {
         for (U32 idx = 0; idx < kMaxSegments; ++idx) {
@@ -254,6 +256,8 @@ class DynamicArray {
         other.m_allocator                = &Memory::default_allocator;
         other.m_base                     = 0;
         other.m_aligned_reservation_size = 0;
+        other.m_current_segment_entry    = 0;
+        other.m_capacity                 = 0;
         other.m_used_segments            = 0;
         other.m_count                    = 0;
     }
@@ -268,6 +272,8 @@ class DynamicArray {
         swap(a.m_allocator, b.m_allocator);
         swap(a.m_base, b.m_base);
         swap(a.m_aligned_reservation_size, b.m_aligned_reservation_size);
+        swap(a.m_current_segment_entry, b.m_current_segment_entry);
+        swap(a.m_capacity, b.m_capacity);
         swap(a.m_count, b.m_count);
         swap(a.m_used_segments, b.m_used_segments);
         swap(a.m_segments, b.m_segments);
@@ -293,16 +299,19 @@ class DynamicArray {
             m_allocator->decommit(ptr, size);
         }
 
-        m_used_segments = 0;
-        m_count         = 0;
+        m_current_segment_entry = 0;
+        m_capacity              = 0;
+        m_used_segments         = 0;
+        m_count                 = 0;
     }
 
     template <typename... Args>
     reference emplace_back(Args&&... args) {
-        if (m_count == capacity()) { add_segment(); }
+        if (m_count == m_capacity) { add_segment(); }
 
-        T* entry = get(m_count);
+        T* entry = m_current_segment_entry;
         std::construct_at(entry, std::forward<Args>(args)...);
+        ++m_current_segment_entry;
         ++m_count;
         return *entry;
     }
@@ -329,7 +338,7 @@ class DynamicArray {
 
     constexpr B32        empty() const { return m_count == 0; }
     constexpr U32        size() const { return m_count; }
-    constexpr U32        capacity() const { return capacity_for_segment_count(m_used_segments); }
+    constexpr U32        capacity() const { return m_capacity; }
     static constexpr U32 max_size() { return capacity_for_segment_count(kMaxSegments); }
 
     allocator_type* get_allocator() const { return m_allocator; }
@@ -397,6 +406,8 @@ class DynamicArray {
         if (!commit_succeeded) { throw std::bad_alloc(); }
 
         m_segments[m_used_segments++] = segment;
+        m_current_segment_entry       = segment;
+        m_capacity += segment_size;
     }
 
     T* get(U32 idx) {
@@ -414,6 +425,8 @@ class DynamicArray {
     Memory::Allocator* m_allocator                = &Memory::default_allocator;
     void*              m_base                     = 0;
     U64                m_aligned_reservation_size = 0;
+    T*                 m_current_segment_entry    = 0;
+    U32                m_capacity                 = 0;
     U32                m_used_segments            = 0;
     U32                m_count                    = 0;
     T*                 m_segments[kMaxSegments]   = {0};
