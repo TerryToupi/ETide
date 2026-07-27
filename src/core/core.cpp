@@ -60,7 +60,14 @@ internal Arena* allocate(Params params) {
     commit_size  = AlignPow2(commit_size, default_page_size);
 
     base = allocator->reserve(reserve_size);
-    SDL_assert(allocator->commit(base, commit_size));
+    if (base == 0) { return 0; }
+
+    B32 commit_succeeded = allocator->commit(base, commit_size);
+    SDL_assert(commit_succeeded);
+    if (!commit_succeeded) {
+        allocator->release(base, reserve_size);
+        return 0;
+    }
 
     Arena* arena     = static_cast<Arena*>(base);
     arena->current   = arena;
@@ -107,6 +114,7 @@ internal void* push(Arena* arena, U64 size, U64 align, B32 zero) {
                                      .reserve_size = res_size,
                                      .commit_size  = cmt_size,
                                      .allocator    = allocator});
+        if (new_block == 0) { return 0; }
 
         size_to_zero = 0;
 
@@ -125,7 +133,10 @@ internal void* push(Arena* arena, U64 size, U64 align, B32 zero) {
         U64 cmt_size        = cmt_pst_clamped - current->cmt;
         U8* cmt_ptr         = (U8*)current + current->cmt;
 
-        SDL_assert(allocator->commit(cmt_ptr, cmt_size));
+        B32 commit_succeeded = allocator->commit(cmt_ptr, cmt_size);
+        SDL_assert(commit_succeeded);
+        if (!commit_succeeded) { return 0; }
+
         current->cmt = cmt_pst_clamped;
     }
 
