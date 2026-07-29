@@ -34,6 +34,7 @@ internal B32 init(void) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     gpu_device.imgui_context_initialized = 1;
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui::StyleColorsDark();
 
     if (!ImGui_ImplSDL3_InitForSDLGPU(gpu_device.window)) {
@@ -62,6 +63,7 @@ internal void begin_frame(void) {
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+    ImGui::DockSpaceOverViewport();
 }
 
 internal B32 end_frame(void) {

@@ -33,15 +33,97 @@
 
 using namespace ETide;
 
+typedef struct TextBuffer TextBuffer;
+struct TextBuffer {
+    Arena::Arena* arena;
+    char*         data;
+    U64           capacity;
+    U64           max_capacity;
+    B32           allocation_failed;
+};
+
 struct ApplicationState {
     Arena::Arena* arena;
     bool          explorer_visible;
     bool          find_visible;
     bool          word_wrap;
-    char          document[32 * 1024];
+    TextBuffer    document;
     char          search[128];
     char          replacement[128];
 };
+
+internal B32 text_buffer_init(TextBuffer* buffer, U64 capacity, U64 max_capacity) {
+    Arena::Arena* arena = Arena::allocate({.flags        = Arena::ArenaFlags_NoChain,
+                                           .reserve_size = max_capacity + Arena::arena_header_size,
+                                           .commit_size  = KB(64)});
+    if (arena == 0) { return 0; }
+
+    buffer->arena = arena;
+    buffer->data  = static_cast<char*>(Arena::push(arena, capacity, 1, 1));
+    if (buffer->data == 0) {
+        Arena::release(arena);
+        *buffer = {};
+        return 0;
+    }
+
+    buffer->capacity     = capacity;
+    buffer->max_capacity = max_capacity;
+    return 1;
+}
+
+internal void text_buffer_release(TextBuffer* buffer) {
+    if (buffer->arena != 0) { Arena::release(buffer->arena); }
+    *buffer = {};
+}
+
+internal B32 text_buffer_reserve(TextBuffer* buffer, U64 required_capacity) {
+    if (required_capacity <= buffer->capacity) { return 1; }
+    if (required_capacity > buffer->max_capacity) {
+        SDL_Log("Document reached its %llu byte capacity",
+                static_cast<unsigned long long>(buffer->max_capacity));
+        buffer->allocation_failed = 1;
+        return 0;
+    }
+
+    U64 capacity = buffer->capacity;
+    while (capacity < required_capacity) { capacity += capacity / 2; }
+    capacity = std::min(capacity, buffer->max_capacity);
+
+    U64   additional_capacity = capacity - buffer->capacity;
+    char* expected_extension  = buffer->data + buffer->capacity;
+    char* extension = static_cast<char*>(Arena::push(buffer->arena, additional_capacity, 1, 0));
+    if (extension == 0) {
+        SDL_Log("Failed to grow the document buffer to %llu bytes",
+                static_cast<unsigned long long>(capacity));
+        buffer->allocation_failed = 1;
+        return 0;
+    }
+    if (extension != expected_extension) {
+        Arena::pop(buffer->arena, additional_capacity);
+        SDL_Log("Document arena no longer has a contiguous tail");
+        buffer->allocation_failed = 1;
+        return 0;
+    }
+
+    buffer->capacity = capacity;
+    return 1;
+}
+
+internal int text_buffer_resize(ImGuiInputTextCallbackData* callback_data) {
+    if (callback_data->EventFlag != ImGuiInputTextFlags_CallbackResize) { return 0; }
+
+    TextBuffer* buffer = static_cast<TextBuffer*>(callback_data->UserData);
+    SDL_assert(callback_data->Buf == buffer->data);
+
+    if (!text_buffer_reserve(buffer, callback_data->BufSize)) {
+        callback_data->BufSize = static_cast<int>(buffer->capacity);
+        return 1;
+    }
+
+    callback_data->Buf     = buffer->data;
+    callback_data->BufSize = static_cast<int>(buffer->capacity);
+    return 0;
+}
 
 internal void draw_text_pad(ApplicationState* state) {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -144,14 +226,17 @@ internal void draw_text_pad(ApplicationState* state) {
                 ImGui::Separator();
             }
 
-            ImGuiInputTextFlags input_flags = ImGuiInputTextFlags_AllowTabInput;
+            ImGuiInputTextFlags input_flags =
+                ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackResize;
             if (state->word_wrap) { input_flags |= ImGuiInputTextFlags_WordWrap; }
             ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.055f, 0.063f, 0.075f, 1.0f));
             ImGui::InputTextMultiline("##Document",
-                                      state->document,
-                                      sizeof(state->document),
+                                      state->document.data,
+                                      state->document.capacity,
                                       ImGui::GetContentRegionAvail(),
-                                      input_flags);
+                                      input_flags,
+                                      text_buffer_resize,
+                                      &state->document);
             ImGui::PopStyleColor();
             ImGui::EndTabItem();
         }
@@ -159,15 +244,23 @@ internal void draw_text_pad(ApplicationState* state) {
     }
     ImGui::EndChild();
 
-    size_t character_count = SDL_strlen(state->document);
+    size_t character_count = SDL_strlen(state->document.data);
     U32    line_count      = 1;
     for (size_t idx = 0; idx < character_count; ++idx) {
-        if (state->document[idx] == '\n') { ++line_count; }
+        if (state->document.data[idx] == '\n') { ++line_count; }
     }
     ImGui::Separator();
     ImGui::Text("Ln %u, Col 1", line_count);
     ImGui::SameLine();
-    ImGui::TextDisabled("  |  %zu characters  |  UTF-8  |  C++  |  Spaces: 4", character_count);
+    ImGui::TextDisabled(
+        "  |  %zu characters  |  %llu byte capacity  |  UTF-8  |  C++  |  "
+        "Spaces: 4",
+        character_count,
+        static_cast<unsigned long long>(state->document.capacity));
+    if (state->document.allocation_failed) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "  |  Buffer growth failed");
+    }
 
     ImGui::End();
 }
@@ -193,16 +286,22 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
 
     state->explorer_visible = true;
     state->word_wrap        = false;
-    SDL_strlcpy(state->document,
-                "#include <SDL3/SDL.h>\n"
-                "#include <imgui.h>\n"
-                "\n"
-                "int main(int argc, char** argv) {\n"
-                "    // A lightweight place for ideas to become code.\n"
-                "    SDL_Log(\"Welcome to TextPad\");\n"
-                "    return 0;\n"
-                "}\n",
-                sizeof(state->document));
+    char initial_document[] =
+        "#include <SDL3/SDL.h>\n"
+        "#include <imgui.h>\n"
+        "\n"
+        "int main(int argc, char** argv) {\n"
+        "    // A lightweight place for ideas to become code.\n"
+        "    SDL_Log(\"Welcome to TextPad\");\n"
+        "    return 0;\n"
+        "}\n";
+
+    if (!text_buffer_init(&state->document, 128, MB(64)) ||
+        !text_buffer_reserve(&state->document, sizeof(initial_document))) {
+        SDL_Log("Failed to allocate the document buffer");
+        return SDL_APP_FAILURE;
+    }
+    SDL_strlcpy(state->document.data, initial_document, state->document.capacity);
 
     return SDL_APP_CONTINUE;
 }
@@ -229,5 +328,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 void SDL_AppQuit(void* appstate, SDL_AppResult result) {
     ApplicationState* state = static_cast<ApplicationState*>(appstate);
     UI::shutdown();
-    if (state != 0) { Arena::release(state->arena); }
+    if (state != 0) {
+        text_buffer_release(&state->document);
+        Arena::release(state->arena);
+    }
 }
