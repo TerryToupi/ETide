@@ -19,7 +19,7 @@ set(SDL_STATIC ON  CACHE BOOL "" FORCE)
 add_subdirectory(libs/SDL)
 
 add_executable(ETide
-  src/main.cpp)
+  src/program.cpp)
 
 target_include_directories(ETide PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src)
