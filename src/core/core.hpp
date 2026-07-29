@@ -99,27 +99,27 @@ typedef int64_t  B64;
 typedef float    F32;
 typedef double   F64;
 
-typedef void* Mutex;
-typedef void* RWLock;
+typedef struct Mutex  Mutex;
+typedef struct RWLock RWLock;
 
 internal U64 ctz32(U32 val);
 internal U64 ctz64(U64 val);
 internal U64 clz32(U32 val);
 internal U64 clz64(U64 val);
 
-internal Mutex mutex_create();
-internal void  mutex_destroy(Mutex mutex);
-internal void  mutex_lock(Mutex mutex);
-internal B32   mutex_try_lock(Mutex mutex);
-internal void  mutex_unlock(Mutex mutex);
+internal Mutex* mutex_create();
+internal void   mutex_destroy(Mutex* mutex);
+internal void   mutex_lock(Mutex* mutex);
+internal B32    mutex_try_lock(Mutex* mutex);
+internal void   mutex_unlock(Mutex* mutex);
 
-internal RWLock rwlock_create();
-internal void   rwlock_destroy(RWLock lock);
-internal void   rwlock_read_lock(RWLock lock);
-internal void   rwlock_write_lock(RWLock lock);
-internal B32    rwlock_try_read_lock(RWLock lock);
-internal B32    rwlock_try_write_lock(RWLock lock);
-internal void   rwlock_unlock(RWLock lock);
+internal RWLock* rwlock_create();
+internal void    rwlock_destroy(RWLock* lock);
+internal void    rwlock_read_lock(RWLock* lock);
+internal void    rwlock_write_lock(RWLock* lock);
+internal B32     rwlock_try_read_lock(RWLock* lock);
+internal B32     rwlock_try_write_lock(RWLock* lock);
+internal void    rwlock_unlock(RWLock* lock);
 
 internal U64 page_size();
 
@@ -759,7 +759,7 @@ class Pool {
         return entry;
     }
 
-    mutable RWLock     m_lock                     = 0;
+    mutable RWLock*    m_lock                     = 0;
     Memory::Allocator* m_allocator                = &Memory::default_allocator;
     void*              m_base                     = 0;
     U64                m_aligned_reservation_size = 0;
