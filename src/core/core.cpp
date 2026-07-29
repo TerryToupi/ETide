@@ -1,5 +1,3 @@
-#include <SDL3/SDL_cpuinfo.h>
-#include <SDL3/SDL_mutex.h>
 
 #if SDL_PLATFORM_WINDOWS
 #    define WIN32_LEAN_AND_MEAN
