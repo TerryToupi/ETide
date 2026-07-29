@@ -343,4 +343,46 @@ internal void end(Temp temp) {
     pop_to(temp.arena, temp.pos);
 }
 
+ThreadState::~ThreadState() {
+    for (U32 idx = 0; idx < ScratchArenaCount; ++idx) {
+        if (scratch_arenas[idx] != 0) {
+            release(scratch_arenas[idx]);
+            scratch_arenas[idx] = 0;
+        }
+    }
+}
+
+internal Scratch ScratchBegin(Arena** conflicts, U64 count) {
+    Scratch result = {};
+    if (conflicts == 0 && count > 0) { return result; }
+
+    for (U32 scratch_idx = 0; scratch_idx < ScratchArenaCount; ++scratch_idx) {
+        Arena* scratch_arena = thread_state.scratch_arenas[scratch_idx];
+        if (scratch_arena == 0) {
+            scratch_arena                            = allocate({});
+            thread_state.scratch_arenas[scratch_idx] = scratch_arena;
+        }
+        if (scratch_arena == 0) { continue; }
+
+        B32 has_conflict = 0;
+        for (U64 conflict_idx = 0; conflict_idx < count; ++conflict_idx) {
+            if (scratch_arena == conflicts[conflict_idx]) {
+                has_conflict = 1;
+                break;
+            }
+        }
+
+        if (!has_conflict) {
+            result = begin(scratch_arena);
+            break;
+        }
+    }
+
+    return result;
+}
+
+internal void ScratchEnd(Scratch scratch) {
+    if (scratch.arena != 0) { end(scratch); }
+}
+
 }  // namespace ETide::Arena

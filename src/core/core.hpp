@@ -166,6 +166,10 @@ enum {
     ArenaFlags_NoChain = (1 << 0),
 };
 
+enum {
+    ScratchArenaCount = 2,
+};
+
 struct Params {
     Flags              flags        = ArenaFlags_None;
     U64                reserve_size = MB(64);
@@ -191,7 +195,16 @@ struct Temp {
     U64    pos;
 };
 
-global U64 arena_header_size = 128;
+typedef Temp Scratch;
+
+struct ThreadState {
+    Arena* scratch_arenas[ScratchArenaCount];
+
+    ~ThreadState();
+};
+
+global thread_local ThreadState thread_state      = {};
+global U64                      arena_header_size = 128;
 
 internal Arena* allocate(Params params);
 internal void   release(Arena* arena);
@@ -204,6 +217,9 @@ internal void  clear(Arena* arena);
 
 internal Temp begin(Arena* arena);
 internal void end(Temp temp);
+
+internal Scratch ScratchBegin(Arena** conflicts, U64 count);
+internal void    ScratchEnd(Scratch scratch);
 
 template <typename T>
 internal inline constexpr T* push_array_no_zero_aligned(Arena* arena, U64 count, U64 align) {
