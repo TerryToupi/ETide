@@ -304,10 +304,14 @@ class DynamicArray {
         }
 
         if (m_used_segments > 0) {
-            void* ptr  = m_base;
-            U64   size = static_cast<U64>(capacity()) * sizeof(T);
-            align_to_page(&ptr, &size);
-            m_allocator->decommit(ptr, size);
+            U64   page_size                = ETide::page_size();
+            U64   decommit_address         = reinterpret_cast<U64>(m_base);
+            U64   aligned_decommit_address = AlignDownPow2(decommit_address, page_size);
+            void* aligned_decommit_ptr     = reinterpret_cast<void*>(aligned_decommit_address);
+            U64   decommit_size            = static_cast<U64>(capacity()) * sizeof(T);
+            U64   aligned_decommit_size =
+                AlignPow2(decommit_size + decommit_address - aligned_decommit_address, page_size);
+            m_allocator->decommit(aligned_decommit_ptr, aligned_decommit_size);
         }
 
         m_current_segment_entry = 0;
@@ -372,16 +376,6 @@ class DynamicArray {
         return 31 - static_cast<U32>(clz32(value));
     }
 
-    static void align_to_page(void** ptr, U64* size) {
-        U64 page            = ETide::page_size();
-        U64 address         = reinterpret_cast<U64>(*ptr);
-        U64 aligned_address = AlignDownPow2(address, page);
-        U64 aligned_size    = AlignPow2(*size + address - aligned_address, page);
-
-        *ptr  = reinterpret_cast<void*>(aligned_address);
-        *size = aligned_size;
-    }
-
     void reserve_storage() {
         m_aligned_reservation_size =
             AlignPow2(static_cast<U64>(max_size()) * sizeof(T), ETide::page_size());
@@ -409,11 +403,14 @@ class DynamicArray {
         U64 byte_offset = static_cast<U64>(capacity_for_segment_count(m_used_segments)) * sizeof(T);
         T*  segment     = reinterpret_cast<T*>(static_cast<U8*>(m_base) + byte_offset);
 
-        void* commit_ptr  = segment;
-        U64   commit_size = byte_size;
-        align_to_page(&commit_ptr, &commit_size);
+        U64   page_size              = ETide::page_size();
+        U64   segment_address        = reinterpret_cast<U64>(segment);
+        U64   aligned_commit_address = AlignDownPow2(segment_address, page_size);
+        void* aligned_commit_ptr     = reinterpret_cast<void*>(aligned_commit_address);
+        U64   aligned_commit_size =
+            AlignPow2(byte_size + segment_address - aligned_commit_address, page_size);
 
-        B32 commit_succeeded = m_allocator->commit(commit_ptr, commit_size);
+        B32 commit_succeeded = m_allocator->commit(aligned_commit_ptr, aligned_commit_size);
         if (!commit_succeeded) { throw std::bad_alloc(); }
 
         m_segments[m_used_segments++] = segment;
@@ -509,10 +506,14 @@ class Pool {
         }
 
         if (m_used_segments > 0) {
-            void* ptr  = m_base;
-            U64   size = static_cast<U64>(m_capacity) * sizeof(Entry);
-            align_to_page(&ptr, &size);
-            m_allocator->decommit(ptr, size);
+            U64   page_size                = ETide::page_size();
+            U64   decommit_address         = reinterpret_cast<U64>(m_base);
+            U64   aligned_decommit_address = AlignDownPow2(decommit_address, page_size);
+            void* aligned_decommit_ptr     = reinterpret_cast<void*>(aligned_decommit_address);
+            U64   decommit_size            = static_cast<U64>(m_capacity) * sizeof(Entry);
+            U64   aligned_decommit_size =
+                AlignPow2(decommit_size + decommit_address - aligned_decommit_address, page_size);
+            m_allocator->decommit(aligned_decommit_ptr, aligned_decommit_size);
         }
 
         m_capacity      = 0;
@@ -683,16 +684,6 @@ class Pool {
         };
     }
 
-    static void align_to_page(void** ptr, U64* size) {
-        U64 page            = ETide::page_size();
-        U64 address         = reinterpret_cast<U64>(*ptr);
-        U64 aligned_address = AlignDownPow2(address, page);
-        U64 aligned_size    = AlignPow2(*size + address - aligned_address, page);
-
-        *ptr  = reinterpret_cast<void*>(aligned_address);
-        *size = aligned_size;
-    }
-
     void reserve_storage() {
         m_aligned_reservation_size =
             AlignPow2(static_cast<U64>(max_size()) * sizeof(Entry), ETide::page_size());
@@ -716,11 +707,14 @@ class Pool {
             static_cast<U64>(capacity_for_segment_count(m_used_segments)) * sizeof(Entry);
         Entry* segment = reinterpret_cast<Entry*>(static_cast<U8*>(m_base) + byte_offset);
 
-        void* commit_ptr  = segment;
-        U64   commit_size = byte_size;
-        align_to_page(&commit_ptr, &commit_size);
+        U64   page_size              = ETide::page_size();
+        U64   segment_address        = reinterpret_cast<U64>(segment);
+        U64   aligned_commit_address = AlignDownPow2(segment_address, page_size);
+        void* aligned_commit_ptr     = reinterpret_cast<void*>(aligned_commit_address);
+        U64   aligned_commit_size =
+            AlignPow2(byte_size + segment_address - aligned_commit_address, page_size);
 
-        B32 commit_succeeded = m_allocator->commit(commit_ptr, commit_size);
+        B32 commit_succeeded = m_allocator->commit(aligned_commit_ptr, aligned_commit_size);
         if (!commit_succeeded) { return 0; }
 
         U32 segment_offset            = m_capacity;
