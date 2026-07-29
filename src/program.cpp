@@ -1,10 +1,27 @@
+// Importing SDL
 #define SDL_MAIN_USE_CALLBACKS 1 /* use the callbacks instead of main() */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_mutex.h>
 
+// STL
+#include <algorithm>
+#include <cstdarg>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <new>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
+
+// .hpp
 #include <core/core.hpp>
+
+// .cpp
 #include <core/core.cpp>
 
 using namespace ETide;
