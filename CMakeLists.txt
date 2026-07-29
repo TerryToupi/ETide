@@ -14,9 +14,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-set(SDL_STATIC ON  CACHE BOOL "" FORCE)
-add_subdirectory(libs/SDL)
+add_subdirectory(libs)
 
 add_executable(ETide
   src/program.cpp)
@@ -25,4 +23,4 @@ target_include_directories(ETide PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_link_libraries(ETide PUBLIC
-  SDL3::SDL3)
+  ETide::Libraries)
