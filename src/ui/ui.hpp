@@ -24,4 +24,4 @@ internal void begin_frame(void);
 internal B32  end_frame(void);
 internal void shutdown(void);
 
-}  // namespace ETide
+}  // namespace ETide::UI

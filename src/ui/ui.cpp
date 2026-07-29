@@ -161,4 +161,4 @@ internal void shutdown(void) {
     gpu_device.swapchain_format  = SDL_GPU_TEXTUREFORMAT_INVALID;
 }
 
-}  // namespace ETide
+}  // namespace ETide::UI
