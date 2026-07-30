@@ -12,6 +12,7 @@
 
 // STL
 #include <algorithm>
+#include <atomic>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -25,10 +26,12 @@
 
 // .hpp
 #include <core/core.hpp>
+#include <piece_tree/piece_tree.hpp>
 #include <ui/ui.hpp>
 
 // .cpp
 #include <core/core.cpp>
+#include <piece_tree/piece_tree.cpp>
 #include <ui/ui.cpp>
 
 using namespace ETide;
@@ -265,6 +268,25 @@ internal void draw_text_pad(ApplicationState* state) {
     ImGui::End();
 }
 
+internal void piece_tree_example() {
+    Arena::Arena* storage = Arena::allocate({});
+    PieceTree::TreeBuilder builder = PieceTree::tree_builder_start(storage);
+
+    char initial[] = "Hello\n";
+    PieceTree::tree_builder_accept(0, &builder, str8_cstr(initial));
+    PieceTree::Tree* tree = PieceTree::tree_builder_finish(&builder);
+
+    char inserted[] = "PieceTree";
+    tree->insert(PieceTree::CharOffset{PieceTree::rep(tree->length())}, str8_cstr(inserted));
+
+    Arena::Scratch scratch = Arena::ScratchBegin(0, 0);
+    String8 line = tree->get_line_content(scratch.arena, PieceTree::Line{1});
+    SDL_Log("Second line: %.*s", static_cast<int>(line.size), line.str);
+    Arena::ScratchEnd(scratch);
+
+    PieceTree::release_tree(tree);
+}
+
 /* This function runs once at startup. */
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     Arena::Arena* arena = Arena::allocate({});
@@ -282,6 +304,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     state->arena = arena;
     *appstate    = state;
 
+    piece_tree_example();
     if (!UI::init()) { return SDL_APP_FAILURE; }
 
     state->explorer_visible = true;

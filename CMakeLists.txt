@@ -24,3 +24,7 @@ target_include_directories(ETide PUBLIC
 
 target_link_libraries(ETide PUBLIC
   ETide::Libraries)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_link_libraries(ETide PUBLIC atomic)
+endif()
