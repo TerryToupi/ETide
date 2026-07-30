@@ -13,9 +13,9 @@ internal B32 node_is_red(RBNodeCounted* node) {
 }
 
 internal void update_node_metadata(RBNodeCounted* node) {
-    U64 left_length = node_length(node->left);
-    U64 left_lf     = node_lf_count(node->left);
-    node->data.left_subtree_length  = Length{left_length};
+    U64 left_length                  = node_length(node->left);
+    U64 left_lf                      = node_lf_count(node->left);
+    node->data.left_subtree_length   = Length{left_length};
     node->data.left_subtree_lf_count = LFCount{left_lf};
     node->subtree_length =
         Length{left_length + rep(node->data.piece.length) + node_length(node->right)};
@@ -37,23 +37,25 @@ internal void dec_node_ref(RBNodeCounted* node) {
     std::atomic_ref<U64> refs(node->ref_count);
     if (refs.fetch_sub(1, std::memory_order_acq_rel) != 1) { return; }
 
-    RBNodeCounted* left  = node->left;
-    RBNodeCounted* right = node->right;
-    RBTreeBlock*   block = node->block;
-    node->left           = 0;
-    node->right          = 0;
-    node->data           = {};
-    node->subtree_length = {};
+    RBNodeCounted* left    = node->left;
+    RBNodeCounted* right   = node->right;
+    RBTreeBlock*   block   = node->block;
+    node->left             = 0;
+    node->right            = 0;
+    node->data             = {};
+    node->subtree_length   = {};
     node->subtree_lf_count = {};
 
     std::atomic_ref<RBNodeFreeList> free_list(block->free_list);
-    RBNodeFreeList expected = free_list.load(std::memory_order_acquire);
-    RBNodeFreeList desired;
+    RBNodeFreeList                  expected = free_list.load(std::memory_order_acquire);
+    RBNodeFreeList                  desired;
     do {
         std::atomic_ref<RBNodeCounted*> next(node->free_next);
         next.store(expected.head, std::memory_order_release);
         desired = {.head = node, .tag = expected.tag + 1};
-    } while (!free_list.compare_exchange_weak(expected, desired, std::memory_order_release,
+    } while (!free_list.compare_exchange_weak(expected,
+                                              desired,
+                                              std::memory_order_release,
                                               std::memory_order_acquire));
 
     dec_node_ref(left);
@@ -61,16 +63,18 @@ internal void dec_node_ref(RBNodeCounted* node) {
 }
 
 internal RBNodeCounted* allocate_node(RBTreeBlock* block) {
-    RBNodeCounted* result = 0;
+    RBNodeCounted*                  result = 0;
     std::atomic_ref<RBNodeFreeList> free_list(block->free_list);
-    RBNodeFreeList expected = free_list.load(std::memory_order_acquire);
+    RBNodeFreeList                  expected = free_list.load(std::memory_order_acquire);
     while (expected.head != 0) {
         std::atomic_ref<RBNodeCounted*> next(expected.head->free_next);
-        RBNodeFreeList desired = {
+        RBNodeFreeList                  desired = {
             .head = next.load(std::memory_order_acquire),
             .tag  = expected.tag + 1,
         };
-        if (free_list.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
+        if (free_list.compare_exchange_weak(expected,
+                                            desired,
+                                            std::memory_order_acq_rel,
                                             std::memory_order_acquire)) {
             result = expected.head;
             break;
@@ -83,19 +87,19 @@ internal RBNodeCounted* allocate_node(RBTreeBlock* block) {
         expected = free_list.load(std::memory_order_acquire);
         while (expected.head != 0) {
             std::atomic_ref<RBNodeCounted*> next(expected.head->free_next);
-            RBNodeFreeList desired = {
+            RBNodeFreeList                  desired = {
                 .head = next.load(std::memory_order_acquire),
                 .tag  = expected.tag + 1,
             };
-            if (free_list.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
+            if (free_list.compare_exchange_weak(expected,
+                                                desired,
+                                                std::memory_order_acq_rel,
                                                 std::memory_order_acquire)) {
                 result = expected.head;
                 break;
             }
         }
-        if (result == 0) {
-            result = Arena::push_array<RBNodeCounted>(block->alloc_arena, 1);
-        }
+        if (result == 0) { result = Arena::push_array<RBNodeCounted>(block->alloc_arena, 1); }
         mutex_unlock(block->allocation_mutex);
         if (result == 0) { throw std::bad_alloc(); }
     }
@@ -110,8 +114,11 @@ internal RBNodeCounted* allocate_node(RBTreeBlock* block) {
     return result;
 }
 
-internal RBNodeCounted* make_node(RBTreeBlock* block, Color color, RBNodeCounted* left,
-                                  NodeData data, RBNodeCounted* right) {
+internal RBNodeCounted* make_node(RBTreeBlock*   block,
+                                  Color          color,
+                                  RBNodeCounted* left,
+                                  NodeData       data,
+                                  RBNodeCounted* right) {
     RBNodeCounted* result = allocate_node(block);
     result->left          = take_node_ref(left);
     result->right         = take_node_ref(right);
@@ -129,31 +136,27 @@ internal RBNodeCounted* repaint_owned(RBTreeBlock* block, RBNodeCounted* node, C
 }
 
 internal RBNodeCounted* rotate_left_owned(RBTreeBlock* block, RBNodeCounted* node) {
-    RBNodeCounted* pivot = node->right;
-    RBNodeCounted* left =
-        make_node(block, Color::Red, node->left, node->data, pivot->left);
-    RBNodeCounted* result =
-        make_node(block, node->color, left, pivot->data, pivot->right);
+    RBNodeCounted* pivot  = node->right;
+    RBNodeCounted* left   = make_node(block, Color::Red, node->left, node->data, pivot->left);
+    RBNodeCounted* result = make_node(block, node->color, left, pivot->data, pivot->right);
     dec_node_ref(left);
     dec_node_ref(node);
     return result;
 }
 
 internal RBNodeCounted* rotate_right_owned(RBTreeBlock* block, RBNodeCounted* node) {
-    RBNodeCounted* pivot = node->left;
-    RBNodeCounted* right =
-        make_node(block, Color::Red, pivot->right, node->data, node->right);
-    RBNodeCounted* result =
-        make_node(block, node->color, pivot->left, pivot->data, right);
+    RBNodeCounted* pivot  = node->left;
+    RBNodeCounted* right  = make_node(block, Color::Red, pivot->right, node->data, node->right);
+    RBNodeCounted* result = make_node(block, node->color, pivot->left, pivot->data, right);
     dec_node_ref(right);
     dec_node_ref(node);
     return result;
 }
 
 internal RBNodeCounted* flip_colors_owned(RBTreeBlock* block, RBNodeCounted* node) {
-    Color parent_color = node->color == Color::Red ? Color::Black : Color::Red;
-    Color left_color   = node->left->color == Color::Red ? Color::Black : Color::Red;
-    Color right_color  = node->right->color == Color::Red ? Color::Black : Color::Red;
+    Color          parent_color = node->color == Color::Red ? Color::Black : Color::Red;
+    Color          left_color   = node->left->color == Color::Red ? Color::Black : Color::Red;
+    Color          right_color  = node->right->color == Color::Red ? Color::Black : Color::Red;
     RBNodeCounted* left =
         make_node(block, left_color, node->left->left, node->left->data, node->left->right);
     RBNodeCounted* right =
@@ -181,11 +184,13 @@ internal RBNodeCounted* fix_up_owned(RBTreeBlock* block, RBNodeCounted* node) {
 internal RBNodeCounted* move_red_left_owned(RBTreeBlock* block, RBNodeCounted* node) {
     node = flip_colors_owned(block, node);
     if (node->right != 0 && node_is_red(node->right->left)) {
-        RBNodeCounted* right = make_node(block, node->right->color, node->right->left,
-                                        node->right->data, node->right->right);
-        right = rotate_right_owned(block, right);
-        RBNodeCounted* parent =
-            make_node(block, node->color, node->left, node->data, right);
+        RBNodeCounted* right  = make_node(block,
+                                          node->right->color,
+                                          node->right->left,
+                                          node->right->data,
+                                          node->right->right);
+        right                 = rotate_right_owned(block, right);
+        RBNodeCounted* parent = make_node(block, node->color, node->left, node->data, right);
         dec_node_ref(right);
         dec_node_ref(node);
         node = rotate_left_owned(block, parent);
@@ -203,20 +208,22 @@ internal RBNodeCounted* move_red_right_owned(RBTreeBlock* block, RBNodeCounted* 
     return node;
 }
 
-internal RBNodeCounted* insert_node(RBTreeBlock* block, RBNodeCounted* node, NodeData data,
-                                    U64 offset) {
+internal RBNodeCounted* insert_node(RBTreeBlock*   block,
+                                    RBNodeCounted* node,
+                                    NodeData       data,
+                                    U64            offset) {
     if (node == 0) { return make_node(block, Color::Red, 0, data, 0); }
 
-    U64 left_length = node_length(node->left);
+    U64            left_length = node_length(node->left);
     RBNodeCounted* result;
     if (offset <= left_length) {
         RBNodeCounted* left = insert_node(block, node->left, data, offset);
-        result = make_node(block, node->color, left, node->data, node->right);
+        result              = make_node(block, node->color, left, node->data, node->right);
         dec_node_ref(left);
     } else {
-        U64 right_offset = offset - left_length - rep(node->data.piece.length);
-        RBNodeCounted* right = insert_node(block, node->right, data, right_offset);
-        result = make_node(block, node->color, node->left, node->data, right);
+        U64            right_offset = offset - left_length - rep(node->data.piece.length);
+        RBNodeCounted* right        = insert_node(block, node->right, data, right_offset);
+        result                      = make_node(block, node->color, node->left, node->data, right);
         dec_node_ref(right);
     }
     return fix_up_owned(block, result);
@@ -230,32 +237,27 @@ internal RBNodeCounted* minimum_node(RBNodeCounted* node) {
 internal RBNodeCounted* delete_min_node(RBTreeBlock* block, RBNodeCounted* node) {
     if (node->left == 0) { return 0; }
 
-    RBNodeCounted* owned =
-        make_node(block, node->color, node->left, node->data, node->right);
-    if (!node_is_red(owned->left) &&
-        (owned->left->left == 0 || !node_is_red(owned->left->left))) {
+    RBNodeCounted* owned = make_node(block, node->color, node->left, node->data, node->right);
+    if (!node_is_red(owned->left) && (owned->left->left == 0 || !node_is_red(owned->left->left))) {
         owned = move_red_left_owned(block, owned);
     }
-    RBNodeCounted* left = delete_min_node(block, owned->left);
-    RBNodeCounted* result =
-        make_node(block, owned->color, left, owned->data, owned->right);
+    RBNodeCounted* left   = delete_min_node(block, owned->left);
+    RBNodeCounted* result = make_node(block, owned->color, left, owned->data, owned->right);
     dec_node_ref(left);
     dec_node_ref(owned);
     return fix_up_owned(block, result);
 }
 
 internal RBNodeCounted* delete_node(RBTreeBlock* block, RBNodeCounted* node, U64 offset) {
-    RBNodeCounted* owned =
-        make_node(block, node->color, node->left, node->data, node->right);
+    RBNodeCounted* owned = make_node(block, node->color, node->left, node->data, node->right);
 
     if (offset < node_length(owned->left)) {
         if (owned->left != 0 && !node_is_red(owned->left) &&
             (owned->left->left == 0 || !node_is_red(owned->left->left))) {
             owned = move_red_left_owned(block, owned);
         }
-        RBNodeCounted* left = delete_node(block, owned->left, offset);
-        RBNodeCounted* result =
-            make_node(block, owned->color, left, owned->data, owned->right);
+        RBNodeCounted* left   = delete_node(block, owned->left, offset);
+        RBNodeCounted* result = make_node(block, owned->color, left, owned->data, owned->right);
         dec_node_ref(left);
         dec_node_ref(owned);
         return fix_up_owned(block, result);
@@ -263,7 +265,7 @@ internal RBNodeCounted* delete_node(RBTreeBlock* block, RBNodeCounted* node, U64
 
     if (node_is_red(owned->left)) { owned = rotate_right_owned(block, owned); }
 
-    U64 left_length = node_length(owned->left);
+    U64 left_length  = node_length(owned->left);
     U64 piece_length = rep(owned->data.piece.length);
     if (offset == left_length && owned->right == 0) {
         dec_node_ref(owned);
@@ -275,22 +277,20 @@ internal RBNodeCounted* delete_node(RBTreeBlock* block, RBNodeCounted* node, U64
         owned = move_red_right_owned(block, owned);
     }
 
-    left_length = node_length(owned->left);
+    left_length  = node_length(owned->left);
     piece_length = rep(owned->data.piece.length);
     if (offset == left_length) {
         RBNodeCounted* successor = minimum_node(owned->right);
         RBNodeCounted* right     = delete_min_node(block, owned->right);
-        RBNodeCounted* result =
-            make_node(block, owned->color, owned->left, successor->data, right);
+        RBNodeCounted* result = make_node(block, owned->color, owned->left, successor->data, right);
         dec_node_ref(right);
         dec_node_ref(owned);
         return fix_up_owned(block, result);
     }
 
-    U64 right_offset = offset - left_length - piece_length;
-    RBNodeCounted* right = delete_node(block, owned->right, right_offset);
-    RBNodeCounted* result =
-        make_node(block, owned->color, owned->left, owned->data, right);
+    U64            right_offset = offset - left_length - piece_length;
+    RBNodeCounted* right        = delete_node(block, owned->right, right_offset);
+    RBNodeCounted* result       = make_node(block, owned->color, owned->left, owned->data, right);
     dec_node_ref(right);
     dec_node_ref(owned);
     return fix_up_owned(block, result);
@@ -415,8 +415,7 @@ const CharBuffer* BufferCollection::buffer_at(BufferIndex index) const {
 }
 
 CharOffset BufferCollection::buffer_offset(BufferIndex index, BufferCursor cursor) const {
-    return CharOffset{
-        cursor_offset(const_cast<CharBuffer*>(buffer_at(index)), cursor)};
+    return CharOffset{cursor_offset(const_cast<CharBuffer*>(buffer_at(index)), cursor)};
 }
 
 internal BufferCollection take_buffer_ref(const BufferCollection* collection) {
@@ -433,7 +432,7 @@ internal BufferCollection take_buffer_ref(const BufferCollection* collection) {
 }
 
 internal BufferCollection take_immutable_buffer_ref(const BufferCollection* collection) {
-    BufferCollection result       = *collection;
+    BufferCollection result      = *collection;
     result.retains_source_arenas = 0;
     if (result.shared != 0) {
         std::atomic_ref<U64> refs(result.shared->immutable_ref_count);
@@ -481,15 +480,15 @@ internal LineStarts calculate_line_starts(Arena::Arena* arena, String8 text) {
 }
 
 internal NodePosition find_node(RBNodeCounted* root, CharOffset offset) {
-    NodePosition result = {};
-    U64 target          = rep(offset);
-    U64 document_start  = 0;
-    U64 document_line   = 0;
-    RBNodeCounted* node = root;
+    NodePosition   result         = {};
+    U64            target         = rep(offset);
+    U64            document_start = 0;
+    U64            document_line  = 0;
+    RBNodeCounted* node           = root;
 
     while (node != 0) {
-        U64 left_length = node_length(node->left);
-        U64 left_lf     = node_lf_count(node->left);
+        U64 left_length  = node_length(node->left);
+        U64 left_lf      = node_lf_count(node->left);
         U64 piece_length = rep(node->data.piece.length);
         if (target < left_length) {
             node = node->left;
@@ -514,9 +513,9 @@ internal NodePosition find_node(RBNodeCounted* root, CharOffset offset) {
 internal U64 line_offset(BufferCollection* buffers, RBNodeCounted* root, U64 line) {
     if (line == 0) { return 0; }
 
-    U64 target = line;
-    U64 base   = 0;
-    RBNodeCounted* node = root;
+    U64            target = line;
+    U64            base   = 0;
+    RBNodeCounted* node   = root;
     while (node != 0) {
         U64 left_lf = node_lf_count(node->left);
         if (target <= left_lf) {
@@ -528,11 +527,11 @@ internal U64 line_offset(BufferCollection* buffers, RBNodeCounted* root, U64 lin
         target -= left_lf;
         U64 piece_lf = rep(node->data.piece.newline_count);
         if (target <= piece_lf) {
-            Piece piece       = node->data.piece;
-            CharBuffer* buffer = buffers->buffer_at(piece.index);
-            U64 piece_first   = cursor_offset(buffer, piece.first);
-            U64 first_line    = line_start_index(buffer, piece_first);
-            U64 start         = rep(buffer->line_starts.starts[first_line + target]);
+            Piece       piece       = node->data.piece;
+            CharBuffer* buffer      = buffers->buffer_at(piece.index);
+            U64         piece_first = cursor_offset(buffer, piece.first);
+            U64         first_line  = line_start_index(buffer, piece_first);
+            U64         start       = rep(buffer->line_starts.starts[first_line + target]);
             return base + left_length + start - piece_first;
         }
 
@@ -544,8 +543,8 @@ internal U64 line_offset(BufferCollection* buffers, RBNodeCounted* root, U64 lin
 }
 
 internal U64 line_at_offset(BufferCollection* buffers, RBNodeCounted* root, U64 offset) {
-    U64 result = 0;
-    RBNodeCounted* node = root;
+    U64            result = 0;
+    RBNodeCounted* node   = root;
     while (node != 0) {
         U64 left_length = node_length(node->left);
         if (offset < left_length) {
@@ -557,9 +556,9 @@ internal U64 line_at_offset(BufferCollection* buffers, RBNodeCounted* root, U64 
         offset -= left_length;
         U64 piece_length = rep(node->data.piece.length);
         if (offset <= piece_length) {
-            Piece piece        = node->data.piece;
+            Piece       piece  = node->data.piece;
             CharBuffer* buffer = buffers->buffer_at(piece.index);
-            U64 first          = cursor_offset(buffer, piece.first);
+            U64         first  = cursor_offset(buffer, piece.first);
             result += lf_count_in_range(buffer, first, first + offset);
             return result;
         }
@@ -573,26 +572,29 @@ internal U64 line_at_offset(BufferCollection* buffers, RBNodeCounted* root, U64 
 internal char char_at_tree(BufferCollection* buffers, RBNodeCounted* root, U64 offset) {
     NodePosition position = find_node(root, CharOffset{offset});
     SDL_assert(position.node != 0);
-    Piece piece        = position.node->piece;
-    CharBuffer* buffer = buffers->buffer_at(piece.index);
-    U64 byte_offset    = cursor_offset(buffer, piece.first) + rep(position.remainder);
+    Piece       piece       = position.node->piece;
+    CharBuffer* buffer      = buffers->buffer_at(piece.index);
+    U64         byte_offset = cursor_offset(buffer, piece.first) + rep(position.remainder);
     return buffer->buffer.str[byte_offset];
 }
 
-internal String8 assemble_tree_range(Arena::Arena* arena, BufferCollection* buffers,
-                                     RBNodeCounted* root, U64 first, U64 last) {
+internal String8 assemble_tree_range(Arena::Arena*     arena,
+                                     BufferCollection* buffers,
+                                     RBNodeCounted*    root,
+                                     U64               first,
+                                     U64               last) {
     SDL_assert(first <= last && last <= node_length(root));
     String8 result = str8_cstr_alloc(arena, last - first);
     if (result.str == 0) { return {}; }
     U64 output = 0;
     U64 offset = first;
     while (offset < last) {
-        NodePosition position = find_node(root, CharOffset{offset});
-        Piece piece           = position.node->piece;
-        CharBuffer* buffer    = buffers->buffer_at(piece.index);
-        U64 available = rep(piece.length) - rep(position.remainder);
-        U64 count     = std::min(available, last - offset);
-        U64 source    = cursor_offset(buffer, piece.first) + rep(position.remainder);
+        NodePosition position  = find_node(root, CharOffset{offset});
+        Piece        piece     = position.node->piece;
+        CharBuffer*  buffer    = buffers->buffer_at(piece.index);
+        U64          available = rep(piece.length) - rep(position.remainder);
+        U64          count     = std::min(available, last - offset);
+        U64          source    = cursor_offset(buffer, piece.first) + rep(position.remainder);
         SDL_memcpy(result.str + output, buffer->buffer.str + source, count);
         output += count;
         offset += count;
@@ -600,9 +602,12 @@ internal String8 assemble_tree_range(Arena::Arena* arena, BufferCollection* buff
     return result;
 }
 
-internal LineRange tree_line_range(BufferCollection* buffers, BufferMeta meta,
-                                   RBNodeCounted* root, Line line, B32 strip_cr,
-                                   B32 include_newline) {
+internal LineRange tree_line_range(BufferCollection* buffers,
+                                   BufferMeta        meta,
+                                   RBNodeCounted*    root,
+                                   Line              line,
+                                   B32               strip_cr,
+                                   B32               include_newline) {
     U64 line_idx   = rep(line);
     U64 line_count = rep(meta.lf_count) + 1;
     SDL_assert(line_idx < line_count);
@@ -623,7 +628,7 @@ TreeBuilder tree_builder_start(Arena::Arena* buffer_arena) {
     TreeBuilder result = {};
     if (buffer_arena == 0) { return result; }
 
-    result.immutable_buf_arena = buffer_arena;
+    result.immutable_buf_arena   = buffer_arena;
     result.undo_redo_stack_arena = Arena::allocate({});
     result.mut_buf_starts_arena =
         Arena::allocate({.flags = Arena::ArenaFlags_NoChain, .reserve_size = GB(64)});
@@ -631,12 +636,8 @@ TreeBuilder tree_builder_start(Arena::Arena* buffer_arena) {
         Arena::allocate({.flags = Arena::ArenaFlags_NoChain, .reserve_size = GB(64)});
     if (result.undo_redo_stack_arena == 0 || result.mut_buf_starts_arena == 0 ||
         result.mut_buf_arena == 0) {
-        if (result.undo_redo_stack_arena != 0) {
-            Arena::release(result.undo_redo_stack_arena);
-        }
-        if (result.mut_buf_starts_arena != 0) {
-            Arena::release(result.mut_buf_starts_arena);
-        }
+        if (result.undo_redo_stack_arena != 0) { Arena::release(result.undo_redo_stack_arena); }
+        if (result.mut_buf_starts_arena != 0) { Arena::release(result.mut_buf_starts_arena); }
         if (result.mut_buf_arena != 0) { Arena::release(result.mut_buf_arena); }
         result = {};
     }
@@ -650,11 +651,10 @@ void tree_builder_accept(Arena::Arena* arena, TreeBuilder* builder, String8 text
     ImmutableBufferNode* node =
         Arena::push_array<ImmutableBufferNode>(builder->immutable_buf_arena, 1);
     if (node == 0) { throw std::bad_alloc(); }
-    node->buffer.buffer      = str8_copy(builder->immutable_buf_arena, text);
+    node->buffer.buffer = str8_copy(builder->immutable_buf_arena, text);
     node->buffer.line_starts =
         calculate_line_starts(builder->immutable_buf_arena, node->buffer.buffer);
-    if ((text.size != 0 && node->buffer.buffer.str == 0) ||
-        node->buffer.line_starts.starts == 0) {
+    if ((text.size != 0 && node->buffer.buffer.str == 0) || node->buffer.line_starts.starts == 0) {
         throw std::bad_alloc();
     }
     SLLQueuePush(builder->buffers.first, builder->buffers.last, node);
@@ -662,9 +662,8 @@ void tree_builder_accept(Arena::Arena* arena, TreeBuilder* builder, String8 text
 }
 
 Tree* tree_builder_finish(TreeBuilder* builder) {
-    if (builder == 0 || builder->immutable_buf_arena == 0 ||
-        builder->undo_redo_stack_arena == 0 || builder->mut_buf_starts_arena == 0 ||
-        builder->mut_buf_arena == 0) {
+    if (builder == 0 || builder->immutable_buf_arena == 0 || builder->undo_redo_stack_arena == 0 ||
+        builder->mut_buf_starts_arena == 0 || builder->mut_buf_arena == 0) {
         return 0;
     }
 
@@ -676,17 +675,15 @@ Tree* tree_builder_finish(TreeBuilder* builder) {
         immutable_buffers[buffer_idx++] = node->buffer;
     }
 
-    RBTreeBlock* block = Arena::push_array<RBTreeBlock>(builder->immutable_buf_arena, 1);
-    SharedBuffers* shared =
-        Arena::push_array<SharedBuffers>(builder->immutable_buf_arena, 1);
+    RBTreeBlock*   block  = Arena::push_array<RBTreeBlock>(builder->immutable_buf_arena, 1);
+    SharedBuffers* shared = Arena::push_array<SharedBuffers>(builder->immutable_buf_arena, 1);
     if (block == 0 || shared == 0) { return 0; }
 
-    block->alloc_arena       = builder->immutable_buf_arena;
+    block->alloc_arena      = builder->immutable_buf_arena;
     block->allocation_mutex = mutex_create();
     if (block->allocation_mutex == 0) { return 0; }
-    char* mod_buffer = Arena::push_array_no_zero_aligned<char>(builder->mut_buf_arena, 1, 1);
-    LineStart* mod_starts =
-        Arena::push_array_no_zero<LineStart>(builder->mut_buf_starts_arena, 1);
+    char*      mod_buffer = Arena::push_array_no_zero_aligned<char>(builder->mut_buf_arena, 1, 1);
+    LineStart* mod_starts = Arena::push_array_no_zero<LineStart>(builder->mut_buf_starts_arena, 1);
     if (mod_buffer == 0 || mod_starts == 0) {
         mutex_destroy(block->allocation_mutex);
         block->allocation_mutex = 0;
@@ -710,17 +707,19 @@ Tree* tree_builder_finish(TreeBuilder* builder) {
         .undo_redo_stack_arena = builder->undo_redo_stack_arena,
         .mut_buf_starts_arena  = builder->mut_buf_starts_arena,
         .mut_buf_arena         = builder->mut_buf_arena,
-        .orig_buffers          = {
-                     .buffers   = immutable_buffers,
-                     .count     = builder->buffers.count,
-                     .ref_count = &shared->immutable_ref_count,
-        },
-        .mod_buffer = {
-            .buffer = {.str = mod_buffer, .size = 0},
-            .line_starts = {.starts = mod_starts, .count = 1},
-        },
-        .rb_tree_blk = block,
-        .shared      = shared,
+        .orig_buffers =
+            {
+                .buffers   = immutable_buffers,
+                .count     = builder->buffers.count,
+                .ref_count = &shared->immutable_ref_count,
+            },
+        .mod_buffer =
+            {
+                .buffer      = {.str = mod_buffer, .size = 0},
+                .line_starts = {.starts = mod_starts, .count = 1},
+            },
+        .rb_tree_blk           = block,
+        .shared                = shared,
         .retains_source_arenas = 1,
     };
 
@@ -760,15 +759,15 @@ void Tree::build_tree() {
         CharBuffer* buffer = &m_buffers.orig_buffers.buffers[idx];
         if (buffer->buffer.size == 0) { continue; }
         Piece piece = {
-            .index = BufferIndex{idx},
-            .first = {},
-            .last  = cursor_from_offset(buffer, buffer->buffer.size),
-            .length = Length{buffer->buffer.size},
+            .index         = BufferIndex{idx},
+            .first         = {},
+            .last          = cursor_from_offset(buffer, buffer->buffer.size),
+            .length        = Length{buffer->buffer.size},
             .newline_count = LFCount{buffer->line_starts.count - 1},
         };
-        NodeData data = {.piece = piece};
+        NodeData     data = {.piece = piece};
         RedBlackTree next = m_root.insert(m_buffers.rb_tree_blk, data, CharOffset{offset});
-        m_root = std::move(next);
+        m_root            = std::move(next);
         offset += buffer->buffer.size;
     }
     compute_buffer_meta();
@@ -776,7 +775,7 @@ void Tree::build_tree() {
 
 void Tree::compute_buffer_meta() {
     m_meta = {
-        .lf_count            = tree_lf_count(m_root),
+        .lf_count             = tree_lf_count(m_root),
         .total_content_length = tree_length(m_root),
     };
 }
@@ -792,16 +791,16 @@ NodePosition Tree::node_at(CharOffset offset) const {
 
 BufferCursor Tree::buffer_position(Piece piece, Length remainder) const {
     CharBuffer* buffer = const_cast<BufferCollection*>(&m_buffers)->buffer_at(piece.index);
-    U64 first          = cursor_offset(buffer, piece.first);
+    U64         first  = cursor_offset(buffer, piece.first);
     return cursor_from_offset(buffer, first + rep(remainder));
 }
 
 Piece Tree::piece_range(Piece piece, U64 first, U64 last) const {
     SDL_assert(first <= last && last <= rep(piece.length));
-    CharBuffer* buffer = const_cast<BufferCollection*>(&m_buffers)->buffer_at(piece.index);
-    U64 base           = cursor_offset(buffer, piece.first);
-    U64 range_first    = base + first;
-    U64 range_last     = base + last;
+    CharBuffer* buffer      = const_cast<BufferCollection*>(&m_buffers)->buffer_at(piece.index);
+    U64         base        = cursor_offset(buffer, piece.first);
+    U64         range_first = base + first;
+    U64         range_last  = base + last;
     return {
         .index         = piece.index,
         .first         = cursor_from_offset(buffer, range_first),
@@ -812,9 +811,9 @@ Piece Tree::piece_range(Piece piece, U64 first, U64 last) const {
 }
 
 Piece Tree::build_piece(String8 text) {
-    CharBuffer* buffer = &m_buffers.mod_buffer;
-    U64 first          = buffer->buffer.size;
-    U64 old_start_count = buffer->line_starts.count;
+    CharBuffer* buffer          = &m_buffers.mod_buffer;
+    U64         first           = buffer->buffer.size;
+    U64         old_start_count = buffer->line_starts.count;
 
     U64 added_lines = 0;
     for (U64 idx = 0; idx < text.size; ++idx) {
@@ -823,9 +822,10 @@ Piece Tree::build_piece(String8 text) {
 
     Arena::Temp byte_temp  = Arena::begin(m_buffers.mut_buf_arena);
     Arena::Temp start_temp = Arena::begin(m_buffers.mut_buf_starts_arena);
-    char* extension = Arena::push_array_no_zero_aligned<char>(m_buffers.mut_buf_arena, text.size, 1);
-    LineStart* starts = Arena::push_array_no_zero<LineStart>(
-        m_buffers.mut_buf_starts_arena, added_lines);
+    char*       extension =
+        Arena::push_array_no_zero_aligned<char>(m_buffers.mut_buf_arena, text.size, 1);
+    LineStart* starts =
+        Arena::push_array_no_zero<LineStart>(m_buffers.mut_buf_starts_arena, added_lines);
     if ((extension == 0 && text.size != 0) || (starts == 0 && added_lines != 0)) {
         Arena::end(byte_temp);
         Arena::end(start_temp);
@@ -869,8 +869,10 @@ void Tree::append_undo(const RedBlackTree& old_root, CharOffset op_offset) {
         entry = m_free_undo_list;
         SLLStackPop(m_free_undo_list);
     } else {
-        entry = static_cast<UndoRedoEntry*>(Arena::push(
-            m_buffers.undo_redo_stack_arena, sizeof(UndoRedoEntry), alignof(UndoRedoEntry), 0));
+        entry = static_cast<UndoRedoEntry*>(Arena::push(m_buffers.undo_redo_stack_arena,
+                                                        sizeof(UndoRedoEntry),
+                                                        alignof(UndoRedoEntry),
+                                                        0));
         if (entry == 0) { throw std::bad_alloc(); }
     }
     ::new (entry) UndoRedoEntry{
@@ -882,8 +884,10 @@ void Tree::append_undo(const RedBlackTree& old_root, CharOffset op_offset) {
     ++m_undo_stack.count;
 }
 
-internal UndoRedoEntry* history_entry(Arena::Arena* arena, UndoRedoEntry** free_list,
-                                      const RedBlackTree& root, CharOffset offset) {
+internal UndoRedoEntry* history_entry(Arena::Arena*       arena,
+                                      UndoRedoEntry**     free_list,
+                                      const RedBlackTree& root,
+                                      CharOffset          offset) {
     UndoRedoEntry* entry = 0;
     if (*free_list != 0) {
         entry = *free_list;
@@ -917,23 +921,23 @@ void Tree::insert(CharOffset offset, String8 text, SuppressHistory suppress_hist
 
 void Tree::internal_insert(CharOffset offset, String8 text) {
     Piece new_piece = build_piece(text);
-    U64 insert_at   = rep(offset);
+    U64   insert_at = rep(offset);
 
     if (insert_at > 0) {
-        NodePosition previous = node_at(CharOffset{insert_at - 1});
-        Piece previous_piece  = previous.node->piece;
-        U64 previous_end      = rep(previous.start_offset) + rep(previous_piece.length);
+        NodePosition previous       = node_at(CharOffset{insert_at - 1});
+        Piece        previous_piece = previous.node->piece;
+        U64          previous_end   = rep(previous.start_offset) + rep(previous_piece.length);
         if (previous_end == insert_at && previous_piece.index == BufferIndex::ModBuf &&
             previous_piece.last == new_piece.first) {
-            Piece combined = previous_piece;
-            combined.last          = new_piece.last;
-            combined.length        = previous_piece.length + new_piece.length;
+            Piece combined  = previous_piece;
+            combined.last   = new_piece.last;
+            combined.length = previous_piece.length + new_piece.length;
             combined.newline_count =
                 LFCount{rep(previous_piece.newline_count) + rep(new_piece.newline_count)};
-            RedBlackTree removed =
-                m_root.remove(m_buffers.rb_tree_blk, previous.start_offset);
-            RedBlackTree inserted = removed.insert(
-                m_buffers.rb_tree_blk, NodeData{.piece = combined}, previous.start_offset);
+            RedBlackTree removed  = m_root.remove(m_buffers.rb_tree_blk, previous.start_offset);
+            RedBlackTree inserted = removed.insert(m_buffers.rb_tree_blk,
+                                                   NodeData{.piece = combined},
+                                                   previous.start_offset);
             set_root(std::move(inserted));
             m_last_insert = combined.last;
             return;
@@ -948,9 +952,9 @@ void Tree::internal_insert(CharOffset offset, String8 text) {
         return;
     }
 
-    NodePosition position = node_at(offset);
-    Piece existing       = position.node->piece;
-    U64 remainder        = rep(position.remainder);
+    NodePosition position  = node_at(offset);
+    Piece        existing  = position.node->piece;
+    U64          remainder = rep(position.remainder);
     if (remainder == 0) {
         RedBlackTree inserted =
             m_root.insert(m_buffers.rb_tree_blk, NodeData{.piece = new_piece}, offset);
@@ -959,16 +963,16 @@ void Tree::internal_insert(CharOffset offset, String8 text) {
         return;
     }
 
-    Piece left  = piece_range(existing, 0, remainder);
-    Piece right = piece_range(existing, remainder, rep(existing.length));
-    RedBlackTree changed =
-        m_root.remove(m_buffers.rb_tree_blk, position.start_offset);
-    changed = changed.insert(m_buffers.rb_tree_blk, NodeData{.piece = left},
-                             position.start_offset);
-    changed = changed.insert(m_buffers.rb_tree_blk, NodeData{.piece = new_piece},
+    Piece        left    = piece_range(existing, 0, remainder);
+    Piece        right   = piece_range(existing, remainder, rep(existing.length));
+    RedBlackTree changed = m_root.remove(m_buffers.rb_tree_blk, position.start_offset);
+    changed = changed.insert(m_buffers.rb_tree_blk, NodeData{.piece = left}, position.start_offset);
+    changed = changed.insert(m_buffers.rb_tree_blk,
+                             NodeData{.piece = new_piece},
                              CharOffset{rep(position.start_offset) + rep(left.length)});
     changed = changed.insert(
-        m_buffers.rb_tree_blk, NodeData{.piece = right},
+        m_buffers.rb_tree_blk,
+        NodeData{.piece = right},
         CharOffset{rep(position.start_offset) + rep(left.length) + rep(new_piece.length)});
     set_root(std::move(changed));
     m_last_insert = new_piece.last;
@@ -992,23 +996,23 @@ void Tree::internal_remove(CharOffset offset, Length count) {
     while (remaining > 0) {
         NodePosition position = node_at(offset);
         SDL_assert(position.node != 0);
-        Piece piece    = position.node->piece;
-        U64 first      = rep(position.remainder);
-        U64 available  = rep(piece.length) - first;
-        U64 remove_now = std::min(remaining, available);
-        Piece left     = piece_range(piece, 0, first);
-        Piece right    = piece_range(piece, first + remove_now, rep(piece.length));
+        Piece piece      = position.node->piece;
+        U64   first      = rep(position.remainder);
+        U64   available  = rep(piece.length) - first;
+        U64   remove_now = std::min(remaining, available);
+        Piece left       = piece_range(piece, 0, first);
+        Piece right      = piece_range(piece, first + remove_now, rep(piece.length));
 
-        RedBlackTree changed =
-            m_root.remove(m_buffers.rb_tree_blk, position.start_offset);
+        RedBlackTree changed = m_root.remove(m_buffers.rb_tree_blk, position.start_offset);
         if (rep(left.length) != 0) {
-            changed = changed.insert(m_buffers.rb_tree_blk, NodeData{.piece = left},
+            changed = changed.insert(m_buffers.rb_tree_blk,
+                                     NodeData{.piece = left},
                                      position.start_offset);
         }
         if (rep(right.length) != 0) {
-            changed = changed.insert(
-                m_buffers.rb_tree_blk, NodeData{.piece = right},
-                CharOffset{rep(position.start_offset) + rep(left.length)});
+            changed = changed.insert(m_buffers.rb_tree_blk,
+                                     NodeData{.piece = right},
+                                     CharOffset{rep(position.start_offset) + rep(left.length)});
         }
         set_root(std::move(changed));
         remaining -= remove_now;
@@ -1036,8 +1040,8 @@ UndoRedoResult Tree::try_undo(CharOffset op_offset) {
     SLLQueuePop(m_undo_stack.first, m_undo_stack.last);
     --m_undo_stack.count;
 
-    UndoRedoEntry* redo = history_entry(m_buffers.undo_redo_stack_arena, &m_free_undo_list,
-                                        m_root, op_offset);
+    UndoRedoEntry* redo =
+        history_entry(m_buffers.undo_redo_stack_arena, &m_free_undo_list, m_root, op_offset);
     SLLQueuePushFront(m_redo_stack.first, m_redo_stack.last, redo);
     ++m_redo_stack.count;
 
@@ -1055,8 +1059,8 @@ UndoRedoResult Tree::try_redo(CharOffset op_offset) {
     SLLQueuePop(m_redo_stack.first, m_redo_stack.last);
     --m_redo_stack.count;
 
-    UndoRedoEntry* undo = history_entry(m_buffers.undo_redo_stack_arena, &m_free_undo_list,
-                                        m_root, op_offset);
+    UndoRedoEntry* undo =
+        history_entry(m_buffers.undo_redo_stack_arena, &m_free_undo_list, m_root, op_offset);
     SLLQueuePushFront(m_undo_stack.first, m_undo_stack.last, undo);
     ++m_undo_stack.count;
 
@@ -1069,8 +1073,11 @@ UndoRedoResult Tree::try_redo(CharOffset op_offset) {
 }
 
 String8 Tree::assemble_range(Arena::Arena* arena, CharOffset first, CharOffset last) const {
-    return assemble_tree_range(arena, const_cast<BufferCollection*>(&m_buffers),
-                               m_root.root_ptr(), rep(first), rep(last));
+    return assemble_tree_range(arena,
+                               const_cast<BufferCollection*>(&m_buffers),
+                               m_root.root_ptr(),
+                               rep(first),
+                               rep(last));
 }
 
 char Tree::at(CharOffset offset) const {
@@ -1080,23 +1087,35 @@ char Tree::at(CharOffset offset) const {
 
 Line Tree::line_at(CharOffset offset) const {
     SDL_assert(rep(offset) <= rep(length()));
-    return Line{line_at_offset(const_cast<BufferCollection*>(&m_buffers), m_root.root_ptr(),
-                               rep(offset))};
+    return Line{
+        line_at_offset(const_cast<BufferCollection*>(&m_buffers), m_root.root_ptr(), rep(offset))};
 }
 
 LineRange Tree::get_line_range(Line line) const {
-    return tree_line_range(const_cast<BufferCollection*>(&m_buffers), m_meta, m_root.root_ptr(),
-                           line, 0, 0);
+    return tree_line_range(const_cast<BufferCollection*>(&m_buffers),
+                           m_meta,
+                           m_root.root_ptr(),
+                           line,
+                           0,
+                           0);
 }
 
 LineRange Tree::get_line_range_crlf(Line line) const {
-    return tree_line_range(const_cast<BufferCollection*>(&m_buffers), m_meta, m_root.root_ptr(),
-                           line, 1, 0);
+    return tree_line_range(const_cast<BufferCollection*>(&m_buffers),
+                           m_meta,
+                           m_root.root_ptr(),
+                           line,
+                           1,
+                           0);
 }
 
 LineRange Tree::get_line_range_with_newline(Line line) const {
-    return tree_line_range(const_cast<BufferCollection*>(&m_buffers), m_meta, m_root.root_ptr(),
-                           line, 0, 1);
+    return tree_line_range(const_cast<BufferCollection*>(&m_buffers),
+                           m_meta,
+                           m_root.root_ptr(),
+                           line,
+                           0,
+                           1);
 }
 
 String8 Tree::get_line_content(Arena::Arena* arena, Line line) const {
@@ -1104,14 +1123,13 @@ String8 Tree::get_line_content(Arena::Arena* arena, Line line) const {
     return assemble_range(arena, range.first, range.last);
 }
 
-IncompleteCRLF Tree::get_line_content_crlf(Arena::Arena* arena, String8* buffer,
-                                           Line line) const {
+IncompleteCRLF Tree::get_line_content_crlf(Arena::Arena* arena, String8* buffer, Line line) const {
     LineRange range = get_line_range_crlf(line);
     *buffer         = assemble_range(arena, range.first, range.last);
     U64 line_idx    = rep(line);
     if (line_idx >= rep(m_meta.lf_count)) { return IncompleteCRLF::No; }
-    U64 next_start = line_offset(const_cast<BufferCollection*>(&m_buffers),
-                                 m_root.root_ptr(), line_idx + 1);
+    U64 next_start =
+        line_offset(const_cast<BufferCollection*>(&m_buffers), m_root.root_ptr(), line_idx + 1);
     B32 has_cr = next_start >= 2 && at(CharOffset{next_start - 2}) == '\r';
     return has_cr ? IncompleteCRLF::No : IncompleteCRLF::Yes;
 }
@@ -1130,23 +1148,24 @@ ReferenceSnapshot Tree::ref_snap() const {
 OwningSnapshot::OwningSnapshot(Arena::Arena* arena, const Tree* tree) :
     OwningSnapshot(arena, tree, tree->m_root) {}
 
-OwningSnapshot::OwningSnapshot(Arena::Arena* arena, const Tree* tree,
-                               const RedBlackTree& root) :
-    m_root(root.dup()), m_meta(tree->m_meta),
+OwningSnapshot::OwningSnapshot(Arena::Arena* arena, const Tree* tree, const RedBlackTree& root) :
+    m_root(root.dup()),
+    m_meta(tree->m_meta),
     m_buffers(take_immutable_buffer_ref(&tree->m_buffers)) {
     (void)arena;
-    U64 byte_reserve = std::max(MB(1), AlignPow2(m_buffers.mod_buffer.buffer.size + 1, KB(64)));
-    U64 starts_size  = m_buffers.mod_buffer.line_starts.count * sizeof(LineStart);
+    U64 byte_reserve   = std::max(MB(1), AlignPow2(m_buffers.mod_buffer.buffer.size + 1, KB(64)));
+    U64 starts_size    = m_buffers.mod_buffer.line_starts.count * sizeof(LineStart);
     U64 starts_reserve = std::max(MB(1), AlignPow2(starts_size + Arena::arena_header_size, KB(64)));
-    m_owned_mut_buf_arena = Arena::allocate(
-        {.flags = Arena::ArenaFlags_NoChain, .reserve_size = byte_reserve + Arena::arena_header_size});
-    m_owned_mut_starts_arena = Arena::allocate(
-        {.flags = Arena::ArenaFlags_NoChain, .reserve_size = starts_reserve});
+    m_owned_mut_buf_arena =
+        Arena::allocate({.flags        = Arena::ArenaFlags_NoChain,
+                         .reserve_size = byte_reserve + Arena::arena_header_size});
+    m_owned_mut_starts_arena =
+        Arena::allocate({.flags = Arena::ArenaFlags_NoChain, .reserve_size = starts_reserve});
     if (m_owned_mut_buf_arena == 0 || m_owned_mut_starts_arena == 0) {
         if (m_owned_mut_buf_arena != 0) { Arena::release(m_owned_mut_buf_arena); }
         if (m_owned_mut_starts_arena != 0) { Arena::release(m_owned_mut_starts_arena); }
         m_owned_mut_buf_arena = m_owned_mut_starts_arena = 0;
-        m_root = {};
+        m_root                                           = {};
         dec_buffer_ref(&m_buffers);
         throw std::bad_alloc();
     }
@@ -1156,20 +1175,19 @@ OwningSnapshot::OwningSnapshot(Arena::Arena* arena, const Tree* tree,
         Arena::release(m_owned_mut_buf_arena);
         Arena::release(m_owned_mut_starts_arena);
         m_owned_mut_buf_arena = m_owned_mut_starts_arena = 0;
-        m_root = {};
+        m_root                                           = {};
         dec_buffer_ref(&m_buffers);
         throw std::bad_alloc();
     }
-    if (copied.size != 0) {
-        SDL_memcpy(copied.str, m_buffers.mod_buffer.buffer.str, copied.size);
-    }
-    LineStart* starts = Arena::push_array_no_zero<LineStart>(
-        m_owned_mut_starts_arena, m_buffers.mod_buffer.line_starts.count);
+    if (copied.size != 0) { SDL_memcpy(copied.str, m_buffers.mod_buffer.buffer.str, copied.size); }
+    LineStart* starts =
+        Arena::push_array_no_zero<LineStart>(m_owned_mut_starts_arena,
+                                             m_buffers.mod_buffer.line_starts.count);
     if (starts == 0) {
         Arena::release(m_owned_mut_buf_arena);
         Arena::release(m_owned_mut_starts_arena);
         m_owned_mut_buf_arena = m_owned_mut_starts_arena = 0;
-        m_root = {};
+        m_root                                           = {};
         dec_buffer_ref(&m_buffers);
         throw std::bad_alloc();
     }
@@ -1177,11 +1195,12 @@ OwningSnapshot::OwningSnapshot(Arena::Arena* arena, const Tree* tree,
     m_buffers.mut_buf_arena        = m_owned_mut_buf_arena;
     m_buffers.mut_buf_starts_arena = m_owned_mut_starts_arena;
     m_buffers.mod_buffer           = {
-                  .buffer      = copied,
-                  .line_starts = {
-                      .starts = starts,
-                      .count  = m_buffers.mod_buffer.line_starts.count,
-        },
+        .buffer = copied,
+        .line_starts =
+            {
+                .starts = starts,
+                .count  = m_buffers.mod_buffer.line_starts.count,
+            },
     };
 }
 
@@ -1198,15 +1217,16 @@ void release_owning_snap(OwningSnapshot* snapshot) {
     if (snapshot != 0) { snapshot->~OwningSnapshot(); }
 }
 
-ReferenceSnapshot::ReferenceSnapshot(const Tree* tree) :
-    ReferenceSnapshot(tree, tree->m_root) {}
+ReferenceSnapshot::ReferenceSnapshot(const Tree* tree) : ReferenceSnapshot(tree, tree->m_root) {}
 
 ReferenceSnapshot::ReferenceSnapshot(const Tree* tree, const RedBlackTree& root) :
-    m_root(root.dup()), m_meta(tree->m_meta),
+    m_root(root.dup()),
+    m_meta(tree->m_meta),
     m_buffers(take_buffer_ref(const_cast<BufferCollection*>(&tree->m_buffers))) {}
 
 ReferenceSnapshot::ReferenceSnapshot(const ReferenceSnapshot& other) :
-    m_root(other.m_root.dup()), m_meta(other.m_meta),
+    m_root(other.m_root.dup()),
+    m_meta(other.m_meta),
     m_buffers(take_buffer_ref(const_cast<BufferCollection*>(&other.m_buffers))) {}
 
 ReferenceSnapshot& ReferenceSnapshot::operator=(const ReferenceSnapshot& other) {
@@ -1225,51 +1245,77 @@ ReferenceSnapshot::~ReferenceSnapshot() {
     dec_buffer_ref(&m_buffers);
 }
 
-internal String8 snapshot_line_content(Arena::Arena* arena, BufferCollection* buffers,
-                                       BufferMeta meta, RBNodeCounted* root, Line line,
-                                       B32 strip_cr) {
+internal String8 snapshot_line_content(Arena::Arena*     arena,
+                                       BufferCollection* buffers,
+                                       BufferMeta        meta,
+                                       RBNodeCounted*    root,
+                                       Line              line,
+                                       B32               strip_cr) {
     LineRange range = tree_line_range(buffers, meta, root, line, strip_cr, 0);
     return assemble_tree_range(arena, buffers, root, rep(range.first), rep(range.last));
 }
 
-#define SNAPSHOT_QUERY_IMPL(Type)                                                                  \
-    String8 Type::get_line_content(Arena::Arena* arena, Line line) const {                         \
-        return snapshot_line_content(arena, const_cast<BufferCollection*>(&m_buffers), m_meta,     \
-                                     m_root.root_ptr(), line, 0);                                  \
-    }                                                                                              \
-    IncompleteCRLF Type::get_line_content_crlf(Arena::Arena* arena, String8* buffer,               \
-                                                Line line) const {                                 \
-        *buffer = snapshot_line_content(arena, const_cast<BufferCollection*>(&m_buffers), m_meta,  \
-                                        m_root.root_ptr(), line, 1);                               \
+#define SNAPSHOT_QUERY_IMPL(Type)                                                                   \
+    String8 Type::get_line_content(Arena::Arena* arena, Line line) const {                          \
+        return snapshot_line_content(arena,                                                         \
+                                     const_cast<BufferCollection*>(&m_buffers),                     \
+                                     m_meta,                                                        \
+                                     m_root.root_ptr(),                                             \
+                                     line,                                                          \
+                                     0);                                                            \
+    }                                                                                               \
+    IncompleteCRLF Type::get_line_content_crlf(Arena::Arena* arena, String8* buffer, Line line)     \
+        const {                                                                                     \
+        *buffer = snapshot_line_content(arena,                                                      \
+                                        const_cast<BufferCollection*>(&m_buffers),                  \
+                                        m_meta,                                                     \
+                                        m_root.root_ptr(),                                          \
+                                        line,                                                       \
+                                        1);                                                         \
         if (rep(line) >= rep(m_meta.lf_count)) { return IncompleteCRLF::No; }                       \
-        U64 next_start = line_offset(const_cast<BufferCollection*>(&m_buffers),                    \
-                                     m_root.root_ptr(), rep(line) + 1);                             \
-        B32 has_cr = next_start >= 2 &&                                                            \
-                     char_at_tree(const_cast<BufferCollection*>(&m_buffers), m_root.root_ptr(),     \
-                                  next_start - 2) == '\r';                                         \
-        return has_cr ? IncompleteCRLF::No : IncompleteCRLF::Yes;                                  \
-    }                                                                                              \
-    char Type::at(CharOffset offset) const {                                                       \
-        SDL_assert(rep(offset) < rep(m_meta.total_content_length));                                \
-        return char_at_tree(const_cast<BufferCollection*>(&m_buffers), m_root.root_ptr(),           \
+        U64 next_start = line_offset(const_cast<BufferCollection*>(&m_buffers),                     \
+                                     m_root.root_ptr(),                                             \
+                                     rep(line) + 1);                                                \
+        B32 has_cr     = next_start >= 2 && char_at_tree(const_cast<BufferCollection*>(&m_buffers), \
+                                                         m_root.root_ptr(),                         \
+                                                         next_start - 2) == '\r';                   \
+        return has_cr ? IncompleteCRLF::No : IncompleteCRLF::Yes;                                   \
+    }                                                                                               \
+    char Type::at(CharOffset offset) const {                                                        \
+        SDL_assert(rep(offset) < rep(m_meta.total_content_length));                                 \
+        return char_at_tree(const_cast<BufferCollection*>(&m_buffers),                              \
+                            m_root.root_ptr(),                                                      \
                             rep(offset));                                                           \
-    }                                                                                              \
-    Line Type::line_at(CharOffset offset) const {                                                  \
-        SDL_assert(rep(offset) <= rep(m_meta.total_content_length));                               \
-        return Line{line_at_offset(const_cast<BufferCollection*>(&m_buffers), m_root.root_ptr(),    \
+    }                                                                                               \
+    Line Type::line_at(CharOffset offset) const {                                                   \
+        SDL_assert(rep(offset) <= rep(m_meta.total_content_length));                                \
+        return Line{line_at_offset(const_cast<BufferCollection*>(&m_buffers),                       \
+                                   m_root.root_ptr(),                                               \
                                    rep(offset))};                                                   \
-    }                                                                                              \
-    LineRange Type::get_line_range(Line line) const {                                              \
-        return tree_line_range(const_cast<BufferCollection*>(&m_buffers), m_meta, m_root.root_ptr(),\
-                               line, 0, 0);                                                        \
-    }                                                                                              \
-    LineRange Type::get_line_range_crlf(Line line) const {                                         \
-        return tree_line_range(const_cast<BufferCollection*>(&m_buffers), m_meta, m_root.root_ptr(),\
-                               line, 1, 0);                                                        \
-    }                                                                                              \
-    LineRange Type::get_line_range_with_newline(Line line) const {                                 \
-        return tree_line_range(const_cast<BufferCollection*>(&m_buffers), m_meta, m_root.root_ptr(),\
-                               line, 0, 1);                                                        \
+    }                                                                                               \
+    LineRange Type::get_line_range(Line line) const {                                               \
+        return tree_line_range(const_cast<BufferCollection*>(&m_buffers),                           \
+                               m_meta,                                                              \
+                               m_root.root_ptr(),                                                   \
+                               line,                                                                \
+                               0,                                                                   \
+                               0);                                                                  \
+    }                                                                                               \
+    LineRange Type::get_line_range_crlf(Line line) const {                                          \
+        return tree_line_range(const_cast<BufferCollection*>(&m_buffers),                           \
+                               m_meta,                                                              \
+                               m_root.root_ptr(),                                                   \
+                               line,                                                                \
+                               1,                                                                   \
+                               0);                                                                  \
+    }                                                                                               \
+    LineRange Type::get_line_range_with_newline(Line line) const {                                  \
+        return tree_line_range(const_cast<BufferCollection*>(&m_buffers),                           \
+                               m_meta,                                                              \
+                               m_root.root_ptr(),                                                   \
+                               line,                                                                \
+                               0,                                                                   \
+                               1);                                                                  \
     }
 
 SNAPSHOT_QUERY_IMPL(OwningSnapshot)
@@ -1327,21 +1373,31 @@ internal RBNodeCounted* walker_stack_pop(StackList* stack) {
 }
 
 TreeWalker::TreeWalker(Arena::Arena* arena, const Tree* tree, CharOffset offset) :
-    TreeWalker(arena, const_cast<BufferCollection*>(&tree->m_buffers), tree->m_meta,
-               tree->m_root, offset) {}
+    TreeWalker(arena,
+               const_cast<BufferCollection*>(&tree->m_buffers),
+               tree->m_meta,
+               tree->m_root,
+               offset) {}
 
-TreeWalker::TreeWalker(Arena::Arena* arena, const OwningSnapshot* snapshot,
-                       CharOffset offset) :
-    TreeWalker(arena, const_cast<BufferCollection*>(&snapshot->m_buffers), snapshot->m_meta,
-               snapshot->m_root, offset) {}
+TreeWalker::TreeWalker(Arena::Arena* arena, const OwningSnapshot* snapshot, CharOffset offset) :
+    TreeWalker(arena,
+               const_cast<BufferCollection*>(&snapshot->m_buffers),
+               snapshot->m_meta,
+               snapshot->m_root,
+               offset) {}
 
-TreeWalker::TreeWalker(Arena::Arena* arena, const ReferenceSnapshot* snapshot,
-                       CharOffset offset) :
-    TreeWalker(arena, const_cast<BufferCollection*>(&snapshot->m_buffers), snapshot->m_meta,
-               snapshot->m_root, offset) {}
+TreeWalker::TreeWalker(Arena::Arena* arena, const ReferenceSnapshot* snapshot, CharOffset offset) :
+    TreeWalker(arena,
+               const_cast<BufferCollection*>(&snapshot->m_buffers),
+               snapshot->m_meta,
+               snapshot->m_root,
+               offset) {}
 
-TreeWalker::TreeWalker(Arena::Arena* arena, BufferCollection* buffers, BufferMeta meta,
-                       const RedBlackTree& root, CharOffset offset) :
+TreeWalker::TreeWalker(Arena::Arena*       arena,
+                       BufferCollection*   buffers,
+                       BufferMeta          meta,
+                       const RedBlackTree& root,
+                       CharOffset          offset) :
     m_buffers(buffers), m_root(root.dup()), m_meta(meta), m_arena(arena), m_offset(offset) {
     seek(offset);
 }
@@ -1349,7 +1405,7 @@ TreeWalker::TreeWalker(Arena::Arena* arena, BufferCollection* buffers, BufferMet
 void TreeWalker::seek(CharOffset offset) {
     SDL_assert(rep(offset) <= rep(m_meta.total_content_length));
     walker_stack_clear(&m_stack);
-    m_offset = offset;
+    m_offset   = offset;
     U64 target = rep(offset);
     m_node     = m_root.root_ptr();
     while (m_node != 0) {
@@ -1381,9 +1437,9 @@ Length TreeWalker::remaining() const {
 
 char TreeWalker::current() {
     SDL_assert(!exhausted());
-    Piece piece        = m_node->data.piece;
-    CharBuffer* buffer = m_buffers->buffer_at(piece.index);
-    U64 byte_offset    = cursor_offset(buffer, piece.first) + m_piece_offset;
+    Piece       piece       = m_node->data.piece;
+    CharBuffer* buffer      = m_buffers->buffer_at(piece.index);
+    U64         byte_offset = cursor_offset(buffer, piece.first) + m_piece_offset;
     return buffer->buffer.str[byte_offset];
 }
 
@@ -1419,25 +1475,31 @@ char TreeWalker::next() {
     return result;
 }
 
-ReverseTreeWalker::ReverseTreeWalker(Arena::Arena* arena, const Tree* tree,
-                                     CharOffset offset) :
-    m_buffers(const_cast<BufferCollection*>(&tree->m_buffers)), m_root(tree->m_root.dup()),
-    m_meta(tree->m_meta), m_arena(arena) {
+ReverseTreeWalker::ReverseTreeWalker(Arena::Arena* arena, const Tree* tree, CharOffset offset) :
+    m_buffers(const_cast<BufferCollection*>(&tree->m_buffers)),
+    m_root(tree->m_root.dup()),
+    m_meta(tree->m_meta),
+    m_arena(arena) {
     seek(offset);
 }
 
-ReverseTreeWalker::ReverseTreeWalker(Arena::Arena* arena, const OwningSnapshot* snapshot,
-                                     CharOffset offset) :
+ReverseTreeWalker::ReverseTreeWalker(Arena::Arena*         arena,
+                                     const OwningSnapshot* snapshot,
+                                     CharOffset            offset) :
     m_buffers(const_cast<BufferCollection*>(&snapshot->m_buffers)),
-    m_root(snapshot->m_root.dup()), m_meta(snapshot->m_meta), m_arena(arena) {
+    m_root(snapshot->m_root.dup()),
+    m_meta(snapshot->m_meta),
+    m_arena(arena) {
     seek(offset);
 }
 
-ReverseTreeWalker::ReverseTreeWalker(Arena::Arena* arena,
+ReverseTreeWalker::ReverseTreeWalker(Arena::Arena*            arena,
                                      const ReferenceSnapshot* snapshot,
-                                     CharOffset offset) :
+                                     CharOffset               offset) :
     m_buffers(const_cast<BufferCollection*>(&snapshot->m_buffers)),
-    m_root(snapshot->m_root.dup()), m_meta(snapshot->m_meta), m_arena(arena) {
+    m_root(snapshot->m_root.dup()),
+    m_meta(snapshot->m_meta),
+    m_arena(arena) {
     seek(offset);
 }
 
@@ -1450,7 +1512,7 @@ void ReverseTreeWalker::seek(CharOffset offset) {
         return;
     }
     SDL_assert(rep(offset) < rep(m_meta.total_content_length));
-    m_offset = offset;
+    m_offset   = offset;
     U64 target = rep(offset);
     m_node     = m_root.root_ptr();
     while (m_node != 0) {
@@ -1482,9 +1544,9 @@ Length ReverseTreeWalker::remaining() const {
 
 char ReverseTreeWalker::current() {
     SDL_assert(!exhausted());
-    Piece piece        = m_node->data.piece;
-    CharBuffer* buffer = m_buffers->buffer_at(piece.index);
-    U64 byte_offset    = cursor_offset(buffer, piece.first) + m_piece_offset;
+    Piece       piece       = m_node->data.piece;
+    CharBuffer* buffer      = m_buffers->buffer_at(piece.index);
+    U64         byte_offset = cursor_offset(buffer, piece.first) + m_piece_offset;
     return buffer->buffer.str[byte_offset];
 }
 
@@ -1528,8 +1590,7 @@ char ReverseTreeWalker::next() {
     return result;
 }
 
-SelectionNode* push_selection(Arena::Arena* arena, SelectionList* list,
-                              Selection selection) {
+SelectionNode* push_selection(Arena::Arena* arena, SelectionList* list, Selection selection) {
     SelectionNode* node = Arena::push_array<SelectionNode>(arena, 1);
     if (node == 0) { return 0; }
     node->selection = selection;
@@ -1542,7 +1603,7 @@ void pop_selection(SelectionList* list) {
     if (list == 0 || list->first == 0) { return; }
     if (list->first == list->last) {
         list->first = list->last = 0;
-        list->count = 0;
+        list->count              = 0;
         return;
     }
     SelectionNode* previous = list->first;
