@@ -82,7 +82,7 @@ internal RBNodeCounted* allocate_node(RBTreeBlock* block) {
     }
 
     if (result == 0) {
-        mutex_lock(block->allocation_mutex);
+        Thread::mutex_lock(block->allocation_mutex);
 
         expected = free_list.load(std::memory_order_acquire);
         while (expected.head != 0) {
@@ -100,7 +100,7 @@ internal RBNodeCounted* allocate_node(RBTreeBlock* block) {
             }
         }
         if (result == 0) { result = Arena::push_array<RBNodeCounted>(block->alloc_arena, 1); }
-        mutex_unlock(block->allocation_mutex);
+        Thread::mutex_unlock(block->allocation_mutex);
         if (result == 0) { throw std::bad_alloc(); }
     }
     result->left             = 0;
@@ -457,14 +457,14 @@ internal void dec_buffer_ref(BufferCollection* collection) {
     std::atomic_ref<U64> immutable_refs(shared->immutable_ref_count);
     if (immutable_refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         if (shared->rb_tree_block->allocation_mutex != 0) {
-            mutex_destroy(shared->rb_tree_block->allocation_mutex);
+            Thread::mutex_destroy(shared->rb_tree_block->allocation_mutex);
             shared->rb_tree_block->allocation_mutex = 0;
         }
         Arena::release(shared->immutable_buf_arena);
     }
 }
 
-internal LineStarts calculate_line_starts(Arena::Arena* arena, String8 text) {
+internal LineStarts calculate_line_starts(Arena::Arena* arena, String::String8 text) {
     U64 count = 1;
     for (U64 idx = 0; idx < text.size; ++idx) {
         if (text.str[idx] == '\n') { ++count; }
@@ -578,13 +578,13 @@ internal char char_at_tree(BufferCollection* buffers, RBNodeCounted* root, U64 o
     return buffer->buffer.str[byte_offset];
 }
 
-internal String8 assemble_tree_range(Arena::Arena*     arena,
-                                     BufferCollection* buffers,
-                                     RBNodeCounted*    root,
-                                     U64               first,
-                                     U64               last) {
+internal String::String8 assemble_tree_range(Arena::Arena*     arena,
+                                             BufferCollection* buffers,
+                                             RBNodeCounted*    root,
+                                             U64               first,
+                                             U64               last) {
     SDL_assert(first <= last && last <= node_length(root));
-    String8 result = str8_cstr_alloc(arena, last - first);
+    String::String8 result = String::str8_cstr_alloc(arena, last - first);
     if (result.str == 0) { return {}; }
     U64 output = 0;
     U64 offset = first;
@@ -644,14 +644,14 @@ TreeBuilder tree_builder_start(Arena::Arena* buffer_arena) {
     return result;
 }
 
-void tree_builder_accept(Arena::Arena* arena, TreeBuilder* builder, String8 text) {
+void tree_builder_accept(Arena::Arena* arena, TreeBuilder* builder, String::String8 text) {
     (void)arena;
     if (builder == 0 || builder->immutable_buf_arena == 0) { return; }
 
     ImmutableBufferNode* node =
         Arena::push_array<ImmutableBufferNode>(builder->immutable_buf_arena, 1);
     if (node == 0) { throw std::bad_alloc(); }
-    node->buffer.buffer = str8_copy(builder->immutable_buf_arena, text);
+    node->buffer.buffer = String::str8_copy(builder->immutable_buf_arena, text);
     node->buffer.line_starts =
         calculate_line_starts(builder->immutable_buf_arena, node->buffer.buffer);
     if ((text.size != 0 && node->buffer.buffer.str == 0) || node->buffer.line_starts.starts == 0) {
@@ -680,12 +680,12 @@ Tree* tree_builder_finish(TreeBuilder* builder) {
     if (block == 0 || shared == 0) { return 0; }
 
     block->alloc_arena      = builder->immutable_buf_arena;
-    block->allocation_mutex = mutex_create();
+    block->allocation_mutex = Thread::mutex_create();
     if (block->allocation_mutex == 0) { return 0; }
     char*      mod_buffer = Arena::push_array_no_zero_aligned<char>(builder->mut_buf_arena, 1, 1);
     LineStart* mod_starts = Arena::push_array_no_zero<LineStart>(builder->mut_buf_starts_arena, 1);
     if (mod_buffer == 0 || mod_starts == 0) {
-        mutex_destroy(block->allocation_mutex);
+        Thread::mutex_destroy(block->allocation_mutex);
         block->allocation_mutex = 0;
         return 0;
     }
@@ -810,7 +810,7 @@ Piece Tree::piece_range(Piece piece, U64 first, U64 last) const {
     };
 }
 
-Piece Tree::build_piece(String8 text) {
+Piece Tree::build_piece(String::String8 text) {
     CharBuffer* buffer          = &m_buffers.mod_buffer;
     U64         first           = buffer->buffer.size;
     U64         old_start_count = buffer->line_starts.count;
@@ -905,7 +905,7 @@ internal UndoRedoEntry* history_entry(Arena::Arena*       arena,
     return entry;
 }
 
-void Tree::insert(CharOffset offset, String8 text, SuppressHistory suppress_history) {
+void Tree::insert(CharOffset offset, String::String8 text, SuppressHistory suppress_history) {
     if (text.size == 0) { return; }
     SDL_assert(rep(offset) <= rep(length()));
     if (rep(offset) > rep(length())) { return; }
@@ -919,7 +919,7 @@ void Tree::insert(CharOffset offset, String8 text, SuppressHistory suppress_hist
     m_end_last_insert = CharOffset{rep(offset) + text.size};
 }
 
-void Tree::internal_insert(CharOffset offset, String8 text) {
+void Tree::internal_insert(CharOffset offset, String::String8 text) {
     Piece new_piece = build_piece(text);
     U64   insert_at = rep(offset);
 
@@ -1072,7 +1072,7 @@ UndoRedoResult Tree::try_redo(CharOffset op_offset) {
     return {.success = 1, .op_offset = result_offset};
 }
 
-String8 Tree::assemble_range(Arena::Arena* arena, CharOffset first, CharOffset last) const {
+String::String8 Tree::assemble_range(Arena::Arena* arena, CharOffset first, CharOffset last) const {
     return assemble_tree_range(arena,
                                const_cast<BufferCollection*>(&m_buffers),
                                m_root.root_ptr(),
@@ -1118,12 +1118,14 @@ LineRange Tree::get_line_range_with_newline(Line line) const {
                            1);
 }
 
-String8 Tree::get_line_content(Arena::Arena* arena, Line line) const {
+String::String8 Tree::get_line_content(Arena::Arena* arena, Line line) const {
     LineRange range = get_line_range(line);
     return assemble_range(arena, range.first, range.last);
 }
 
-IncompleteCRLF Tree::get_line_content_crlf(Arena::Arena* arena, String8* buffer, Line line) const {
+IncompleteCRLF Tree::get_line_content_crlf(Arena::Arena*    arena,
+                                           String::String8* buffer,
+                                           Line             line) const {
     LineRange range = get_line_range_crlf(line);
     *buffer         = assemble_range(arena, range.first, range.last);
     U64 line_idx    = rep(line);
@@ -1170,7 +1172,8 @@ OwningSnapshot::OwningSnapshot(Arena::Arena* arena, const Tree* tree, const RedB
         throw std::bad_alloc();
     }
 
-    String8 copied = str8_cstr_alloc(m_owned_mut_buf_arena, m_buffers.mod_buffer.buffer.size);
+    String::String8 copied =
+        String::str8_cstr_alloc(m_owned_mut_buf_arena, m_buffers.mod_buffer.buffer.size);
     if (copied.str == 0) {
         Arena::release(m_owned_mut_buf_arena);
         Arena::release(m_owned_mut_starts_arena);
@@ -1245,18 +1248,18 @@ ReferenceSnapshot::~ReferenceSnapshot() {
     dec_buffer_ref(&m_buffers);
 }
 
-internal String8 snapshot_line_content(Arena::Arena*     arena,
-                                       BufferCollection* buffers,
-                                       BufferMeta        meta,
-                                       RBNodeCounted*    root,
-                                       Line              line,
-                                       B32               strip_cr) {
+internal String::String8 snapshot_line_content(Arena::Arena*     arena,
+                                               BufferCollection* buffers,
+                                               BufferMeta        meta,
+                                               RBNodeCounted*    root,
+                                               Line              line,
+                                               B32               strip_cr) {
     LineRange range = tree_line_range(buffers, meta, root, line, strip_cr, 0);
     return assemble_tree_range(arena, buffers, root, rep(range.first), rep(range.last));
 }
 
 #define SNAPSHOT_QUERY_IMPL(Type)                                                                   \
-    String8 Type::get_line_content(Arena::Arena* arena, Line line) const {                          \
+    String::String8 Type::get_line_content(Arena::Arena* arena, Line line) const {                  \
         return snapshot_line_content(arena,                                                         \
                                      const_cast<BufferCollection*>(&m_buffers),                     \
                                      m_meta,                                                        \
@@ -1264,8 +1267,9 @@ internal String8 snapshot_line_content(Arena::Arena*     arena,
                                      line,                                                          \
                                      0);                                                            \
     }                                                                                               \
-    IncompleteCRLF Type::get_line_content_crlf(Arena::Arena* arena, String8* buffer, Line line)     \
-        const {                                                                                     \
+    IncompleteCRLF Type::get_line_content_crlf(Arena::Arena*    arena,                              \
+                                               String::String8* buffer,                             \
+                                               Line             line) const {                       \
         *buffer = snapshot_line_content(arena,                                                      \
                                         const_cast<BufferCollection*>(&m_buffers),                  \
                                         m_meta,                                                     \

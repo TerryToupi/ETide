@@ -26,11 +26,18 @@
 
 // .hpp
 #include <core/core.hpp>
+#include <thread/thread.hpp>
+#include <arena/arena.hpp>
+#include <string/string.hpp>
+#include <containers/containers.hpp>
 #include <piece_tree/piece_tree.hpp>
 #include <ui/ui.hpp>
 
 // .cpp
 #include <core/core.cpp>
+#include <thread/thread.cpp>
+#include <arena/arena.cpp>
+#include <string/string.cpp>
 #include <piece_tree/piece_tree.cpp>
 #include <ui/ui.cpp>
 
@@ -274,17 +281,17 @@ internal void piece_tree_example() {
 
     char first[]  = "Hello\n";
     char second[] = "world";
-    PieceTree::tree_builder_accept(0, &builder, str8_cstr(first));
-    PieceTree::tree_builder_accept(0, &builder, str8_cstr(second));
+    PieceTree::tree_builder_accept(0, &builder, String::str8_cstr(first));
+    PieceTree::tree_builder_accept(0, &builder, String::str8_cstr(second));
 
     PieceTree::Tree* tree = PieceTree::tree_builder_finish(&builder);
 
     char inserted[] = "persistent ";
-    tree->insert(PieceTree::CharOffset{6}, str8_cstr(inserted));
+    tree->insert(PieceTree::CharOffset{6}, String::str8_cstr(inserted));
 
-    Arena::Scratch scratch = Arena::ScratchBegin(0, 0);
-    String8        line1   = tree->get_line_content(scratch.arena, PieceTree::Line{0});
-    String8        line2   = tree->get_line_content(scratch.arena, PieceTree::Line{1});
+    Arena::Scratch  scratch = Arena::ScratchBegin(0, 0);
+    String::String8 line1   = tree->get_line_content(scratch.arena, PieceTree::Line{0});
+    String::String8 line2   = tree->get_line_content(scratch.arena, PieceTree::Line{1});
     SDL_Log("%.*s", static_cast<int>(line1.size), line1.str);  // persistent world
     SDL_Log("%.*s", static_cast<int>(line2.size), line2.str);  // persistent world
     Arena::ScratchEnd(scratch);

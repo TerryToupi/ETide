@@ -17,16 +17,16 @@ PieceTree::TreeBuilder builder = PieceTree::tree_builder_start(storage);
 
 char first[]  = "Hello\n";
 char second[] = "world";
-PieceTree::tree_builder_accept(0, &builder, str8_cstr(first));
-PieceTree::tree_builder_accept(0, &builder, str8_cstr(second));
+PieceTree::tree_builder_accept(0, &builder, String::str8_cstr(first));
+PieceTree::tree_builder_accept(0, &builder, String::str8_cstr(second));
 
 PieceTree::Tree* tree = PieceTree::tree_builder_finish(&builder);
 
 char inserted[] = "persistent ";
-tree->insert(PieceTree::CharOffset{6}, str8_cstr(inserted));
+tree->insert(PieceTree::CharOffset{6}, String::str8_cstr(inserted));
 
 Arena::Scratch scratch = Arena::ScratchBegin(0, 0);
-String8 line = tree->get_line_content(scratch.arena, PieceTree::Line{1});
+String::String8 line = tree->get_line_content(scratch.arena, PieceTree::Line{1});
 SDL_Log("%.*s", static_cast<int>(line.size), line.str); // persistent world
 Arena::ScratchEnd(scratch);
 
@@ -90,7 +90,7 @@ arena becomes the immutable-buffer and tree-node arena.
 void tree_builder_accept(
     Arena::Arena* scratch_arena,
     TreeBuilder* builder,
-    String8 text);
+    String::String8 text);
 ```
 
 Copies one initial buffer into immutable storage. Buffers appear in the document in the
@@ -103,8 +103,8 @@ valid.
 char header[] = "one\n";
 char body[]   = "two\nthree";
 
-PieceTree::tree_builder_accept(0, &builder, str8_cstr(header));
-PieceTree::tree_builder_accept(0, &builder, str8_cstr(body));
+PieceTree::tree_builder_accept(0, &builder, String::str8_cstr(header));
+PieceTree::tree_builder_accept(0, &builder, String::str8_cstr(body));
 ```
 
 ### `tree_builder_finish`
@@ -146,7 +146,7 @@ retain the storage they require.
 ```cpp
 void Tree::insert(
     CharOffset offset,
-    String8 text,
+    String::String8 text,
     SuppressHistory history = SuppressHistory::No);
 ```
 
@@ -155,12 +155,12 @@ the modification buffer, while the piece tree is changed to reference them.
 
 ```cpp
 char prefix[] = "Start: ";
-tree->insert(PieceTree::CharOffset{0}, str8_cstr(prefix));
+tree->insert(PieceTree::CharOffset{0}, String::str8_cstr(prefix));
 
 char suffix[] = "\nDone";
 tree->insert(
     PieceTree::CharOffset{PieceTree::rep(tree->length())},
-    str8_cstr(suffix));
+    String::str8_cstr(suffix));
 ```
 
 Inserting an empty string is a no-op. Sequential insertions at the previous insertion
@@ -194,7 +194,7 @@ tree->commit_head(PieceTree::CharOffset{10});
 
 tree->insert(
     PieceTree::CharOffset{10},
-    str8_cstr(inserted),
+    String::str8_cstr(inserted),
     PieceTree::SuppressHistory::Yes);
 ```
 
@@ -266,11 +266,11 @@ PieceTree::Length length = PieceTree::distance(range.first, range.last);
 ### Assembling line content
 
 ```cpp
-String8 Tree::get_line_content(Arena::Arena* arena, Line line) const;
+String::String8 Tree::get_line_content(Arena::Arena* arena, Line line) const;
 
 IncompleteCRLF Tree::get_line_content_crlf(
     Arena::Arena* arena,
-    String8* result,
+    String::String8* result,
     Line line) const;
 ```
 
@@ -280,7 +280,7 @@ arena. It remains valid until that arena is popped or released.
 ```cpp
 Arena::Scratch scratch = Arena::ScratchBegin(0, 0);
 
-String8 content =
+String::String8 content =
     tree->get_line_content(scratch.arena, PieceTree::Line{0});
 
 SDL_Log("%.*s", static_cast<int>(content.size), content.str);
@@ -291,7 +291,7 @@ The CRLF-aware function removes a valid `\r\n`. It returns
 `IncompleteCRLF::Yes` when the line ends with `\n` without a preceding `\r`.
 
 ```cpp
-String8 content = {};
+String::String8 content = {};
 PieceTree::IncompleteCRLF incomplete =
     tree->get_line_content_crlf(
         scratch.arena,
@@ -360,7 +360,7 @@ Switches the active document to a compatible retained root.
 ```cpp
 PieceTree::RedBlackTree saved = tree->head();
 
-tree->insert(PieceTree::CharOffset{0}, str8_cstr(inserted));
+tree->insert(PieceTree::CharOffset{0}, String::str8_cstr(inserted));
 
 // Restore the saved branch.
 tree->snap_to(saved);
@@ -402,7 +402,7 @@ It is cheap to create and copy. Its destructor releases its retained references.
 ```cpp
 PieceTree::ReferenceSnapshot snapshot = tree->ref_snap();
 
-tree->insert(PieceTree::CharOffset{0}, str8_cstr(inserted));
+tree->insert(PieceTree::CharOffset{0}, String::str8_cstr(inserted));
 
 // Reads the state from before the insertion.
 char original_first = snapshot.at(PieceTree::CharOffset{0});
@@ -427,7 +427,7 @@ Arena::Scratch scratch = Arena::ScratchBegin(0, 0);
 PieceTree::OwningSnapshot* snapshot = tree->owning_snap(scratch.arena);
 PieceTree::release_tree(tree);
 
-String8 line =
+String::String8 line =
     snapshot->get_line_content(scratch.arena, PieceTree::Line{0});
 
 PieceTree::release_owning_snap(snapshot);
@@ -544,7 +544,7 @@ PieceTree::SelectionMeta meta = {
 - Append-only modification line-start arena.
 - Undo and redo entry arena.
 
-`CharBuffer` combines a `String8` byte span with its `LineStarts` index.
+`CharBuffer` combines a `String::String8` byte span with its `LineStarts` index.
 
 `BufferIndex::ModBuf` selects the modification buffer. Any other `BufferIndex` selects
 an entry in `orig_buffers`.
@@ -611,7 +611,7 @@ used by walkers.
 
 - Initial text is copied when accepted by a builder.
 - Inserted text is copied into append-only modification storage.
-- Returned `String8` line content belongs to the arena supplied to the query.
+- Returned `String::String8` line content belongs to the arena supplied to the query.
 - `release_tree` is the only release needed for a successfully finished tree.
 - Reference snapshots release themselves through normal C++ lifetime.
 - Owning snapshots require `release_owning_snap`.

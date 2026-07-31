@@ -102,7 +102,7 @@ struct alignas(16) RBNodeFreeList {
 struct RBTreeBlock {
     RBNodeFreeList free_list;
     Arena::Arena*  alloc_arena;
-    Mutex*         allocation_mutex;
+    Thread::Mutex* allocation_mutex;
 };
 
 internal void           dec_node_ref(RBNodeCounted* node);
@@ -147,8 +147,8 @@ struct LineStarts {
 };
 
 struct CharBuffer {
-    String8    buffer;
-    LineStarts line_starts;
+    String::String8 buffer;
+    LineStarts      line_starts;
 };
 
 struct ImmutableBufferArray {
@@ -243,7 +243,7 @@ class Tree {
 
     void           build_tree();
     void           insert(CharOffset      offset,
-                          String8         text,
+                          String::String8 text,
                           SuppressHistory suppress_history = SuppressHistory::No);
     void           remove(CharOffset      offset,
                           Length          count,
@@ -254,17 +254,19 @@ class Tree {
     RedBlackTree   head() const;
     void           snap_to(const RedBlackTree& new_root);
 
-    String8        get_line_content(Arena::Arena* arena, Line line) const;
-    IncompleteCRLF get_line_content_crlf(Arena::Arena* arena, String8* buffer, Line line) const;
-    char           at(CharOffset offset) const;
-    Line           line_at(CharOffset offset) const;
-    LineRange      get_line_range(Line line) const;
-    LineRange      get_line_range_crlf(Line line) const;
-    LineRange      get_line_range_with_newline(Line line) const;
-    Length         length() const { return m_meta.total_content_length; }
-    B32            is_empty() const { return rep(length()) == 0; }
-    LFCount        line_feed_count() const { return m_meta.lf_count; }
-    Length         line_count() const { return Length{rep(m_meta.lf_count) + 1}; }
+    String::String8 get_line_content(Arena::Arena* arena, Line line) const;
+    IncompleteCRLF  get_line_content_crlf(Arena::Arena*    arena,
+                                          String::String8* buffer,
+                                          Line             line) const;
+    char            at(CharOffset offset) const;
+    Line            line_at(CharOffset offset) const;
+    LineRange       get_line_range(Line line) const;
+    LineRange       get_line_range_crlf(Line line) const;
+    LineRange       get_line_range_with_newline(Line line) const;
+    Length          length() const { return m_meta.total_content_length; }
+    B32             is_empty() const { return rep(length()) == 0; }
+    LFCount         line_feed_count() const { return m_meta.lf_count; }
+    Length          line_count() const { return Length{rep(m_meta.lf_count) + 1}; }
 
     OwningSnapshot*   owning_snap(Arena::Arena* arena) const;
     ReferenceSnapshot ref_snap() const;
@@ -276,17 +278,17 @@ class Tree {
     friend class TreeWalker;
     friend class ReverseTreeWalker;
 
-    void         internal_insert(CharOffset offset, String8 text);
-    void         internal_remove(CharOffset offset, Length count);
-    Piece        build_piece(String8 text);
-    NodePosition node_at(CharOffset offset) const;
-    BufferCursor buffer_position(Piece piece, Length remainder) const;
-    Piece        piece_range(Piece piece, U64 first, U64 last) const;
-    void         append_undo(const RedBlackTree& old_root, CharOffset op_offset);
-    void         clear_history(UndoRedoList* list);
-    void         set_root(RedBlackTree root);
-    void         compute_buffer_meta();
-    String8      assemble_range(Arena::Arena* arena, CharOffset first, CharOffset last) const;
+    void            internal_insert(CharOffset offset, String::String8 text);
+    void            internal_remove(CharOffset offset, Length count);
+    Piece           build_piece(String::String8 text);
+    NodePosition    node_at(CharOffset offset) const;
+    BufferCursor    buffer_position(Piece piece, Length remainder) const;
+    Piece           piece_range(Piece piece, U64 first, U64 last) const;
+    void            append_undo(const RedBlackTree& old_root, CharOffset op_offset);
+    void            clear_history(UndoRedoList* list);
+    void            set_root(RedBlackTree root);
+    void            compute_buffer_meta();
+    String::String8 assemble_range(Arena::Arena* arena, CharOffset first, CharOffset last) const;
 
     BufferCollection m_buffers;
     RedBlackTree     m_root;
@@ -318,10 +320,10 @@ struct TreeBuilder {
 };
 
 internal TreeBuilder tree_builder_start(Arena::Arena* buffer_arena);
-internal void        tree_builder_accept(Arena::Arena* arena, TreeBuilder* builder, String8 text);
-internal Tree*       tree_builder_finish(TreeBuilder* builder);
-internal Tree*       tree_builder_empty(Arena::Arena* buffer_arena);
-internal void        release_tree(Tree* tree);
+internal void  tree_builder_accept(Arena::Arena* arena, TreeBuilder* builder, String::String8 text);
+internal Tree* tree_builder_finish(TreeBuilder* builder);
+internal Tree* tree_builder_empty(Arena::Arena* buffer_arena);
+internal void  release_tree(Tree* tree);
 
 class OwningSnapshot {
    public:
@@ -329,8 +331,10 @@ class OwningSnapshot {
     OwningSnapshot(Arena::Arena* arena, const Tree* tree, const RedBlackTree& root);
     ~OwningSnapshot();
 
-    String8          get_line_content(Arena::Arena* arena, Line line) const;
-    IncompleteCRLF   get_line_content_crlf(Arena::Arena* arena, String8* buffer, Line line) const;
+    String::String8  get_line_content(Arena::Arena* arena, Line line) const;
+    IncompleteCRLF   get_line_content_crlf(Arena::Arena*    arena,
+                                           String::String8* buffer,
+                                           Line             line) const;
     char             at(CharOffset offset) const;
     Line             line_at(CharOffset offset) const;
     LineRange        get_line_range(Line line) const;
@@ -361,16 +365,18 @@ class ReferenceSnapshot {
     ReferenceSnapshot& operator=(const ReferenceSnapshot& other);
     ~ReferenceSnapshot();
 
-    String8        get_line_content(Arena::Arena* arena, Line line) const;
-    IncompleteCRLF get_line_content_crlf(Arena::Arena* arena, String8* buffer, Line line) const;
-    char           at(CharOffset offset) const;
-    Line           line_at(CharOffset offset) const;
-    LineRange      get_line_range(Line line) const;
-    LineRange      get_line_range_crlf(Line line) const;
-    LineRange      get_line_range_with_newline(Line line) const;
-    B32            is_empty() const { return rep(m_meta.total_content_length) == 0; }
-    Length         line_count() const { return Length{rep(m_meta.lf_count) + 1}; }
-    Length         length() const { return m_meta.total_content_length; }
+    String::String8 get_line_content(Arena::Arena* arena, Line line) const;
+    IncompleteCRLF  get_line_content_crlf(Arena::Arena*    arena,
+                                          String::String8* buffer,
+                                          Line             line) const;
+    char            at(CharOffset offset) const;
+    Line            line_at(CharOffset offset) const;
+    LineRange       get_line_range(Line line) const;
+    LineRange       get_line_range_crlf(Line line) const;
+    LineRange       get_line_range_with_newline(Line line) const;
+    B32             is_empty() const { return rep(m_meta.total_content_length) == 0; }
+    Length          line_count() const { return Length{rep(m_meta.lf_count) + 1}; }
+    Length          length() const { return m_meta.total_content_length; }
 
    private:
     friend class TreeWalker;

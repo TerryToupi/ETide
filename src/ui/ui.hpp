@@ -1,3 +1,6 @@
+#ifndef UI_HPP_
+#define UI_HPP_
+
 namespace ETide::UI {
 
 typedef struct Device Device;
@@ -25,3 +28,5 @@ internal B32  end_frame(void);
 internal void shutdown(void);
 
 }  // namespace ETide::UI
+
+#endif
